@@ -1,0 +1,306 @@
+:root {
+  --bg: #121416;
+  --panel: #1b1e22;
+  --panel-2: #262a30;
+  --border: #38404a;
+  --text: #f3f0e7;
+  --muted: #9da396;
+  --accent: #d7f36b;
+  --danger: #ff776d;
+  --warm: #f0a36b;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background-color: var(--bg);
+  background-image: linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: 32px 32px;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+a { color: var(--accent); }
+
+/* ---------------- topbar ---------------- */
+
+.topbar {
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 0 24px;
+  background: rgba(25, 28, 23, 0.94);
+  border-bottom: 1px solid var(--border);
+}
+
+.logo-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.logo-mark {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent);
+  border-radius: 7px 7px 7px 2px;
+  color: var(--bg);
+  background: var(--accent);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  transform: rotate(-6deg);
+  box-shadow: 3px 3px 0 var(--warm);
+}
+
+.logo-mark img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  transform: rotate(6deg);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+}
+
+/* Only populated if a mod calls ModAPI.registerTab — empty on the bare site. */
+.tab-nav {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.tab {
+  appearance: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tab .connector {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tab:hover { background: var(--panel-2); color: var(--text); }
+.tab:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.tab.active {
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.spacer { flex: 1; }
+
+/* Only populated if a mod calls ModAPI.registerWidget — empty on the bare site. */
+.widget-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  outline: none;
+  background: transparent;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.icon-btn:hover { color: var(--accent); background: var(--panel-2); }
+.icon-btn:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
+
+/* ---------------- main content ---------------- */
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 44px 28px;
+}
+
+.main.full-bleed {
+  padding: 0;
+}
+
+.main.full-bleed .content-panel {
+  max-width: none;
+  min-height: 100%;
+}
+
+/* Blank by default — a mod's tab render() is the only thing that ever
+   puts content in here. */
+.content-panel {
+  max-width: 760px;
+  margin: 0 auto;
+  min-height: 1px;
+  opacity: 1;
+  transition: opacity 0.12s ease;
+}
+
+.content-panel:not(:empty) {
+  padding: 0;
+}
+
+.content-panel.fading { opacity: 0; }
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin-top: 0;
+  letter-spacing: -0.01em;
+}
+
+.muted { color: var(--muted); font-size: 13px; }
+.error { color: var(--danger); font-size: 13px; }
+
+code, pre {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+code { padding: 1px 6px; font-size: 0.9em; }
+pre { padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+
+/* ---------------- floating widgets ---------------- */
+
+.widget-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 4, 12, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.floating-widget {
+  position: fixed;
+  width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: slideUp 0.2s ease;
+}
+
+.widget-backdrop .floating-widget {
+  position: static; /* the backdrop's flex centering positions it instead */
+  animation: none;
+}
+
+.floating-widget.centered {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* Dialog-style chrome for centered/overlay panels (Settings, Login) — more
+   room, a real header treatment — vs. the compact utility-card look small
+   widgets (like a counter) keep by default. */
+.floating-widget.modal {
+  border-radius: 16px;
+  padding: 18px;
+  gap: 14px;
+}
+
+.floating-widget.modal .floating-widget-header {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  padding-bottom: 12px;
+  margin-bottom: -4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.floating-widget-header {
+  cursor: move;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: 13px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.floating-widget-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.floating-widget-close {
+  cursor: pointer;
+  opacity: 0.5;
+  display: flex;
+  align-items: center;
+}
+
+.floating-widget-close:hover { opacity: 1; }
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 0 18px -2px var(--accent); }
+  50% { box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 0 26px 2px var(--accent); }
+}

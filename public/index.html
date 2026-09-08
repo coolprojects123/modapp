@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>modapp</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=Material+Symbols+Outlined" rel="stylesheet">
+  <link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+  <!--
+    This is the bare site: a topbar (icon + wordmark + wherever mods hang tabs/widgets)
+    over blank space. Nothing renders in the content area unless a mod
+    registers a tab. site.js builds this shell; bootstrap.js loads mods
+    on top of it.
+  -->
+  <div id="app"></div>
+  <!-- Load Tauri API for Tauri v2+ (must be loaded as module) -->
+  <script type="module" src="js/tauri-invoke.js"></script>
+  <script src="js/native-api.js"></script>
+  <script src="js/mods.js"></script>
+  <script src="js/bootstrap.js"></script>
+  <script src="js/site.js"></script>
+</body>
+</html>

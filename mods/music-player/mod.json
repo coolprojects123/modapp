@@ -1,0 +1,12 @@
+{
+  "name": "Music Player",
+  "version": "1.0.0",
+  "author": "modapp",
+  "description": "Import and play local music and video files in the app.",
+  "enabledByDefault": true,
+  "apis": ["api.js"],
+  "styles": ["style.css"],
+  "scripts": ["script.js"],
+  "backend": "backend.lua",
+  "permissions": ["fs.ensure_dir"]
+}

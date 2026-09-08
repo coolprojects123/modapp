@@ -1,0 +1,32 @@
+window.MOD_MANIFESTS = [
+  {
+    id: 'core',
+    name: 'Core',
+    version: '1.0.0',
+    description: 'Home page, Settings and Login.',
+    enabledByDefault: true,
+    apis: ['api.js'],
+    styles: ['style.css'],
+    scripts: ['script.js'],
+  },
+  {
+    id: 'music-player',
+    name: 'Music Player',
+    version: '1.0.0',
+    description: 'Play local music and video files in the app.',
+    enabledByDefault: true,
+    apis: ['api.js'],
+    styles: ['style.css'],
+    scripts: ['script.js'],
+  },
+  {
+    id: 'ide',
+    name: 'IDE',
+    version: '1.0.0',
+    description: 'A lightweight code workspace with a native Bash terminal.',
+    enabledByDefault: true,
+    apis: ['api.js'],
+    styles: ['style.css'],
+    scripts: ['script.js'],
+  },
+];

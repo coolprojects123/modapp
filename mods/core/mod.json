@@ -1,0 +1,12 @@
+{
+  "name": "Core",
+  "version": "1.0.0",
+  "author": "modapp",
+  "description": "Home page, Settings and Login.",
+  "enabledByDefault": true,
+  "apis": ["api.js"],
+  "styles": ["style.css"],
+  "scripts": ["script.js"],
+  "backend": "backend.lua",
+  "permissions": ["settings.read", "settings.write", "mods.toggle"]
+}

@@ -1,0 +1,47 @@
+# Node / JS
+node_modules/
+.npm/
+.pnpm-store/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/.cargo/
+
+# Build artifacts
+/dist/
+/build/
+coverage/
+*.log
+.tmp/
+
+# App-specific generated runtime data
+settings.json
+mods-config.json
+mods/**/.config.json
+mods/**/.settings.json
+
+# Local environment / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Electron runtime files
+out/
+release-builds/
+dist-electron/
+
+# OS files
+Thumbs.db
+
+# Generated package output
+*.deb
+*.rpm
+*.AppImage
+
+# Electron builder metadata
+*.provisionprofile
+*.dmg
+
+
