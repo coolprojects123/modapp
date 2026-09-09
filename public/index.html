@@ -16,9 +16,11 @@
     on top of it.
   -->
   <div id="app"></div>
-  <!-- Load Tauri API for Tauri v2+ (must be loaded as module) -->
+  <!-- Load Tauri API bridge for Tauri v2+ (must be loaded as module) -->
   <script type="module" src="js/tauri-invoke.js"></script>
-  <script src="js/native-api.js"></script>
+  <script src="../mods/music-player/vendor/jsmediatags.min.js"></script>
+  <!-- Native API v2 - Centralized API for all desktop features -->
+  <script src="js/native-api-v2.js"></script>
   <script src="js/mods.js"></script>
   <script src="js/bootstrap.js"></script>
   <script src="js/site.js"></script>

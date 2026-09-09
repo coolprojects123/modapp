@@ -17,23 +17,25 @@ const DEFAULT_SETTINGS = {
 };
 
 function readSettings() {
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('modsite_settings') || '{}') }; }
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('modapp_settings') || '{}') }; }
   catch { return { ...DEFAULT_SETTINGS }; }
 }
 
 async function loadSettings() {
+  if (window.nativeAPIReady) await window.nativeAPIReady;
   return window.appAPI ? window.appAPI.readSettings() : readSettings();
 }
 
 async function writeSettings(changes) {
+  if (window.nativeAPIReady) await window.nativeAPIReady;
   if (window.appAPI) return window.appAPI.writeSettings(changes);
   const updated = { ...readSettings(), ...changes };
-  localStorage.setItem('modsite_settings', JSON.stringify(updated));
+  localStorage.setItem('modapp_settings', JSON.stringify(updated));
   return updated;
 }
 
 function readMods() {
-  const saved = JSON.parse(localStorage.getItem('modsite_mods') || '{}');
+  const saved = JSON.parse(localStorage.getItem('modapp_mods') || '{}');
   return window.MOD_MANIFESTS.map((mod) => ({
     ...mod,
     core: mod.id === 'core',
@@ -161,9 +163,9 @@ async function renderModsSection(container) {
       btn.textContent = '\u2026';
       if (window.appAPI) await window.appAPI.toggleMod(btn.dataset.id);
       else {
-        const config = JSON.parse(localStorage.getItem('modsite_mods') || '{}');
+        const config = JSON.parse(localStorage.getItem('modapp_mods') || '{}');
         config[btn.dataset.id] = !mod.enabled;
-        localStorage.setItem('modsite_mods', JSON.stringify(config));
+        localStorage.setItem('modapp_mods', JSON.stringify(config));
       }
       location.reload();
     });
@@ -219,6 +221,7 @@ ModAPI.registerWidget({
 // clicking the matching nav button.
 document.addEventListener('mods:ready', async () => {
   const s = await loadSettings();
+  ModAPI.setIdentity({ title: s.siteTitle, icon: s.siteIcon });
   applySettingsToShell(s);
   if (s.defaultTab) {
     const btn = document.querySelector(`.tab[data-id="${s.defaultTab}"]`);
@@ -226,7 +229,7 @@ document.addEventListener('mods:ready', async () => {
   }
 });
 
-function getToken() { return localStorage.getItem('modsite_token'); }
+function getToken() { return localStorage.getItem('modapp_token'); }
 
 async function renderLoginPanel(container) {
   const token = getToken();
@@ -239,12 +242,12 @@ async function renderLoginPanel(container) {
         <button class="save-btn" id="logout-btn">Log out</button>
       `;
       container.querySelector('#logout-btn').addEventListener('click', () => {
-        localStorage.removeItem('modsite_token');
+        localStorage.removeItem('modapp_token');
         renderLoginPanel(container);
       });
       return;
     }
-    localStorage.removeItem('modsite_token');
+    localStorage.removeItem('modapp_token');
   }
 
   container.innerHTML = `
@@ -264,7 +267,7 @@ async function renderLoginPanel(container) {
       container.querySelector('#login-error').style.display = 'block';
       return;
     }
-    localStorage.setItem('modsite_token', JSON.stringify({ username: form.username.value }));
+    localStorage.setItem('modapp_token', JSON.stringify({ username: form.username.value }));
     renderLoginPanel(container);
   });
 }

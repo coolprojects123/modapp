@@ -8,7 +8,17 @@
  * this file renders an empty page.
  */
 
-window.ModAPI = (function () {
+// Check if ModAPI already exists (set by native-api-v2.js)
+// If so, extend it; otherwise create a new one
+if (!window.ModAPI) {
+  window.ModAPI = {};
+}
+
+// Store existing native API if present
+const existingNativeAPI = window.ModAPI.native;
+
+// Create or extend ModAPI
+const modAPIImpl = (function () {
   const tabs = new Map();          // id -> { id, label, icon, render, source }
   const widgets = new Map();       // id -> { id, label, icon, mount, source }
   const overrides = new Map();     // id -> render fn
@@ -34,14 +44,15 @@ window.ModAPI = (function () {
 
     get identity() { return { ...identity }; },
 
-    native: {
+    // Native API - use existing if available, otherwise create placeholder
+    native: existingNativeAPI || {
       // Deprecated: no backing command exists anymore (native_invoke was
       // removed). Kept only so a stale call fails with a clear message
       // instead of a bare "undefined is not a function".
       invoke(method, payload) {
         if (!window.appAPI?.invoke) {
           return Promise.reject(new Error(
-            `ModAPI.native.invoke('${method}') is no longer available — use ModAPI.native.callBackend(modId, fn, args) instead.`
+            `ModAPI.native.invoke('${method}') is no longer available — use ModAPI.native.fs or other specialized APIs instead.`
           ));
         }
         return window.appAPI.invoke(method, payload);
@@ -123,7 +134,13 @@ window.ModAPI = (function () {
   };
 })();
 
+// Merge the implementation with any existing ModAPI properties
+// This preserves ModAPI.native that was set by native-api-v2.js
+Object.assign(window.ModAPI, modAPIImpl);
+
 async function loadMods() {
+  if (window.nativeAPIReady) await window.nativeAPIReady;
+
   const mods = window.appAPI
     ? (await window.appAPI.listMods()).filter((mod) => mod.enabled)
     : window.MOD_MANIFESTS

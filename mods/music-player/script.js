@@ -27,6 +27,16 @@ function getFileType(file) {
   return 'unknown';
 }
 
+function getMediaMimeType(name) {
+  const extension = String(name).toLowerCase().split('.').pop();
+  return {
+    mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+    aac: 'audio/aac', flac: 'audio/flac', m4a: 'audio/mp4',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    avi: 'video/x-msvideo', mkv: 'video/x-matroska', flv: 'video/x-flv',
+  }[extension] || 'application/octet-stream';
+}
+
 function getFileIcon(type) {
   if (type === 'audio') return 'music_note';
   if (type === 'video') return 'movie';
@@ -332,6 +342,34 @@ const ID3Parser = {
     }
   }
 };
+
+function parseMp3TagsWithJsMediaTags(file) {
+  if (!window.jsmediatags) return Promise.resolve(null);
+  const source = file.sourceFile || file.mediaBlob || file.url;
+  if (!source) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    window.jsmediatags.read(source, {
+      onSuccess: ({ tags }) => {
+        const artwork = tags.picture;
+        resolve({
+          title: tags.title,
+          artist: tags.artist,
+          album: tags.album,
+          year: tags.year,
+          genre: tags.genre,
+          trackNumber: tags.track,
+          artwork: artwork ? {
+            mimeType: artwork.format,
+            pictureType: artwork.type,
+            data: new Uint8Array(artwork.data),
+          } : null,
+        });
+      },
+      onError: () => resolve(null),
+    });
+  });
+}
 
 // Tag parser for MP4/MOV/M4A containers — reads the iTunes-style metadata
 // atoms nested at moov > udta > meta > ilst. Each box is [4-byte size][4-byte
@@ -654,6 +692,15 @@ function renderMusicPlayer(container) {
   let streamingMounted = false;
   let playbackRetrying = false;
 
+  async function ensureMediaUrl(file) {
+    if (file.url) return file.url;
+    if (!file.storagePath) throw new Error(`Media file is unavailable: ${file.name}`);
+
+    file.url = await ModAPI.music.getFileUrl(file.storagePath);
+    file.objectUrl = false;
+    return file.url;
+  }
+
   // ---------------- dom refs ----------------
   const toptabs = container.querySelectorAll('.music-toptab');
   const libraryView = container.querySelector('#music-view-library');
@@ -710,13 +757,17 @@ function renderMusicPlayer(container) {
         for (const file of files) {
           const type = getFileType(file);
           if (type === 'unknown') continue;
+          const storagePath = `music-uploads/${file.name.replace(/[\\/]/g, '_')}`;
+          await ModAPI.music.writeBytes(storagePath, new Uint8Array(await file.arrayBuffer()));
+          const storedUrl = await ModAPI.music.getFileUrl(storagePath);
           mediaFiles.push({
             name: file.name,
             type,
             size: file.size,
-            url: URL.createObjectURL(file),
-            objectUrl: true,
+            url: storedUrl,
+            objectUrl: false,
             sourceFile: file,
+            storagePath,
             duration: 0,
             tags: null,
           });
@@ -744,7 +795,7 @@ function renderMusicPlayer(container) {
       }
 
       updatePlaylist();
-      if (mediaFiles.length > 0 && currentIndex === -1) playMedia(0);
+      if (mediaFiles.length > 0 && currentIndex === -1) safePlayMedia(0);
     } catch (error) {
       console.error('Upload error:', error);
       uploadArea.innerHTML = `
@@ -799,7 +850,7 @@ function renderMusicPlayer(container) {
         <span class="playlist-item-duration">${duration}</span>
       `;
       item.appendChild(deleteBtn);
-      item.addEventListener('click', () => playMedia(actualIndex));
+      item.addEventListener('click', () => safePlayMedia(actualIndex));
       playlistItems.appendChild(item);
     });
   }
@@ -818,10 +869,23 @@ function renderMusicPlayer(container) {
     const file = mediaFiles[index];
     isPlaying = true;
 
+    try {
+      await ensureMediaUrl(file);
+    } catch (error) {
+      isPlaying = false;
+      nowPlayingArtist.textContent = error.message || `Unable to load ${file.name}`;
+      updatePlayPauseButton();
+      console.error('[music-player] media load failed:', error);
+      return;
+    }
+
     // Parse tags: ID3 for MP3, iTunes-style atoms for MP4/M4A/MOV
     if (!file.tags) {
       const lowerName = file.name.toLowerCase();
-      if (lowerName.endsWith('.mp3')) file.tags = await ID3Parser.parseTags(file);
+      if (lowerName.endsWith('.mp3')) {
+        file.tags = await parseMp3TagsWithJsMediaTags(file);
+        if (!file.tags) file.tags = await ID3Parser.parseTags(file);
+      }
       else if (lowerName.endsWith('.mp4') || lowerName.endsWith('.m4a') || lowerName.endsWith('.mov')) file.tags = await MP4TagParser.parseTags(file);
     }
 
@@ -839,7 +903,7 @@ function renderMusicPlayer(container) {
       mediaPlayerMount.style.display = 'none';
     }
 
-    currentMediaElement.src = file.url;
+    setMediaSource(currentMediaElement, file);
     currentMediaElement.preload = 'auto';
     currentMediaElement.playsInline = true;
     currentMediaElement.volume = volume;
@@ -848,6 +912,12 @@ function renderMusicPlayer(container) {
 
     currentMediaElement.addEventListener('timeupdate', updateProgress);
     currentMediaElement.addEventListener('ended', handleMediaEnded);
+    currentMediaElement.addEventListener('playing', () => syncPlaybackState(true));
+    currentMediaElement.addEventListener('play', () => syncPlaybackState(true));
+    currentMediaElement.addEventListener('pause', () => syncPlaybackState(false));
+    currentMediaElement.addEventListener('waiting', () => {
+      if (currentMediaElement === playbackElement) syncPlaybackState(false);
+    });
     currentMediaElement.addEventListener('loadedmetadata', () => {
       durationDisplay.textContent = formatTime(currentMediaElement.duration);
       if (file.duration !== currentMediaElement.duration) {
@@ -861,28 +931,21 @@ function renderMusicPlayer(container) {
 
       // Some WebKit builds reject blob media URLs even though the same local
       // file is playable as a data URL.
-      if (file.sourceFile && file.objectUrl && !playbackRetrying) {
-        playbackRetrying = true;
-        try {
-          file.url = await readFileAsDataUrl(file.sourceFile);
-          file.objectUrl = false;
-          currentMediaElement.src = file.url;
-          currentMediaElement.load();
-          await currentMediaElement.play();
-          isPlaying = true;
-          updatePlayPauseButton();
-          return;
-        } catch (retryError) {
-          console.error('[music-player] playback retry failed:', retryError);
-        } finally {
-          playbackRetrying = false;
-        }
+      if (await retryWithDataUrl(file)) {
+        return;
       }
 
       isPlaying = false;
       nowPlayingArtist.textContent = errorMessage;
       updatePlayPauseButton();
-      console.error('[music-player] playback failed:', mediaError || errorMessage);
+      console.error('[music-player] playback failed:', {
+        file: file.name,
+        url: file.url,
+        code: mediaError?.code,
+        networkState: currentMediaElement.networkState,
+        readyState: currentMediaElement.readyState,
+        error: mediaError || errorMessage,
+      });
     }, { once: true });
 
     const displayTitle = file.tags && file.tags.title ? file.tags.title : file.name;
@@ -901,16 +964,25 @@ function renderMusicPlayer(container) {
 
     updateTagsDisplay(file);
 
-    currentMediaElement.load();
-    currentMediaElement.play().catch((e) => {
-      console.error('Playback failed:', e);
+    const playbackElement = currentMediaElement;
+    playbackElement.load();
+    playbackElement.play().catch(async (error) => {
+      if (await retryWithDataUrl(file)) return;
+      if (error.name === 'AbortError' && (playbackRetrying || currentMediaElement !== playbackElement)) return;
+      console.error('[music-player] playback failed:', error);
       isPlaying = false;
-      nowPlayingArtist.textContent = e.message || `Unable to play ${file.name}`;
+      nowPlayingArtist.textContent = error.message || `Unable to play ${file.name}`;
       updatePlayPauseButton();
     });
 
     updatePlayPauseButton();
     updatePlaylist();
+  }
+
+  function safePlayMedia(index) {
+    playMedia(index).catch((error) => {
+      console.error('[music-player] playback failed:', error);
+    });
   }
 
   function readFileAsDataUrl(file) {
@@ -922,20 +994,70 @@ function renderMusicPlayer(container) {
     });
   }
 
+  function bytesToDataUrl(bytes, mimeType) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return `data:${mimeType};base64,${btoa(binary)}`;
+  }
+
+  function setMediaSource(mediaElement, file) {
+    mediaElement.innerHTML = '';
+    const source = document.createElement('source');
+    source.src = file.url;
+    source.type = getMediaMimeType(file.name);
+    mediaElement.appendChild(source);
+  }
+
+  async function retryWithDataUrl(file) {
+    if (playbackRetrying) return true;
+    if (!(file.sourceFile || file.storagePath) || file.fallbackAttempted) return false;
+
+    playbackRetrying = true;
+    file.fallbackAttempted = true;
+    try {
+      if (file.sourceFile) {
+        file.url = await readFileAsDataUrl(file.sourceFile);
+      } else {
+        const response = await fetch(file.url);
+        if (!response.ok) throw new Error(`Unable to read media asset (${response.status})`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        file.url = bytesToDataUrl(bytes, getMediaMimeType(file.name));
+      }
+      file.objectUrl = false;
+      setMediaSource(currentMediaElement, file);
+      currentMediaElement.load();
+      await currentMediaElement.play();
+      isPlaying = true;
+      updatePlayPauseButton();
+      return true;
+    } catch (error) {
+      console.error('[music-player] data URL playback retry failed:', error);
+      return false;
+    } finally {
+      playbackRetrying = false;
+    }
+  }
+
   function handleMediaEnded() {
     if (repeatMode === 'one') {
       if (currentMediaElement) {
         currentMediaElement.currentTime = 0;
-        currentMediaElement.play().catch((e) => { console.error('Playback failed:', e); isPlaying = false; updatePlayPauseButton(); });
+        currentMediaElement.play().catch((error) => {
+          console.error('[music-player] repeat playback failed:', error);
+          syncPlaybackState(false);
+        });
       }
       return;
     }
     if (shuffleMode) {
-      playMedia(Math.floor(Math.random() * mediaFiles.length));
+      safePlayMedia(Math.floor(Math.random() * mediaFiles.length));
     } else if (repeatMode === 'all' && currentIndex === mediaFiles.length - 1) {
-      playMedia(0);
+      safePlayMedia(0);
     } else if (currentIndex < mediaFiles.length - 1) {
-      playMedia(currentIndex + 1);
+      safePlayMedia(currentIndex + 1);
     } else {
       isPlaying = false;
       updatePlayPauseButton();
@@ -956,14 +1078,19 @@ function renderMusicPlayer(container) {
   }
 
   function togglePlayPause() {
-    if (!currentMediaElement) { if (mediaFiles.length > 0) playMedia(0); return; }
-    if (isPlaying) { currentMediaElement.pause(); isPlaying = false; }
-    else { currentMediaElement.play().catch((e) => console.error('Playback failed:', e)); isPlaying = true; }
-    updatePlayPauseButton();
+    if (!currentMediaElement) { if (mediaFiles.length > 0) safePlayMedia(0); return; }
+    if (currentMediaElement.paused) {
+      currentMediaElement.play().catch((error) => {
+        console.error('[music-player] playback failed:', error);
+        syncPlaybackState(false);
+      });
+    } else {
+      currentMediaElement.pause();
+    }
   }
 
-  function playNext() { if (mediaFiles.length) playMedia((currentIndex + 1) % mediaFiles.length); }
-  function playPrevious() { if (mediaFiles.length) playMedia((currentIndex - 1 + mediaFiles.length) % mediaFiles.length); }
+  function playNext() { if (mediaFiles.length) safePlayMedia((currentIndex + 1) % mediaFiles.length); }
+  function playPrevious() { if (mediaFiles.length) safePlayMedia((currentIndex - 1 + mediaFiles.length) % mediaFiles.length); }
 
   function updateProgress() {
     if (!currentMediaElement || !currentMediaElement.duration) return;
@@ -974,6 +1101,11 @@ function renderMusicPlayer(container) {
 
   function updatePlayPauseButton() {
     playPauseBtn.querySelector('.material-symbols-outlined').textContent = isPlaying ? 'pause' : 'play_arrow';
+  }
+
+  function syncPlaybackState(playing) {
+    isPlaying = playing;
+    updatePlayPauseButton();
   }
 
   function setVolume(value) {
@@ -988,6 +1120,7 @@ function renderMusicPlayer(container) {
 
     try {
       if (file.objectUrl) URL.revokeObjectURL(file.url);
+      if (file.storagePath) await ModAPI.music.removeFile(file.storagePath);
     } catch (error) {
       console.error('Error deleting media:', error);
     }
@@ -1012,7 +1145,7 @@ function renderMusicPlayer(container) {
       seekRange.value = 0;
       updateSeekFill();
     } else {
-      playMedia(currentIndex);
+      safePlayMedia(currentIndex);
     }
 
     updatePlayPauseButton();
@@ -1072,8 +1205,40 @@ function renderMusicPlayer(container) {
 
   playlistFilter.addEventListener('input', updatePlaylist);
 
+  async function loadStoredFiles() {
+    await ModAPI.music.ensureUploadsDir();
+    const names = await ModAPI.music.listDir('music-uploads');
+    for (const name of names) {
+      if (getFileType({ name }) === 'unknown') continue;
+      const storagePath = `music-uploads/${name}`;
+      mediaFiles.push({
+        name,
+        type: getFileType({ name }),
+        size: 0,
+        url: await ModAPI.music.getFileUrl(storagePath),
+        objectUrl: false,
+        sourceFile: null,
+        storagePath,
+        duration: 0,
+        tags: null,
+      });
+    }
+    updatePlaylist();
+    if (mediaFiles.length > 0 && currentIndex === -1) {
+      await waitForTabPaint();
+      safePlayMedia(0);
+    }
+  }
+
+  function waitForTabPaint() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+  }
+
   updatePlaylist();
   updatePlayPauseButton();
+  loadStoredFiles().catch((error) => console.warn('[music-player] stored media load failed:', error));
 }
 
 // Register the music player as a tab

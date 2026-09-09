@@ -64,6 +64,68 @@ function discoverMods() {
     .filter(Boolean);
 }
 
+// ============================================================
+// New Centralized FS API Endpoints
+// ============================================================
+
+// Filesystem operations
+ipcMain.handle('ensure_dir', (_event, { path: dirPath }) => {
+  const fullPath = path.join(modsDir, dirPath);
+  fs.mkdirSync(fullPath, { recursive: true });
+  return fullPath;
+});
+
+ipcMain.handle('read_file', (_event, { path: filePath }) => {
+  const fullPath = path.join(modsDir, filePath);
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`File not found: ${fullPath}`);
+  }
+  return fs.readFileSync(fullPath, 'utf8');
+});
+
+ipcMain.handle('write_file', (_event, { path: filePath, content }) => {
+  const fullPath = path.join(modsDir, filePath);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, content, 'utf8');
+  return true;
+});
+
+ipcMain.handle('read_dir', (_event, { path: dirPath }) => {
+  const fullPath = path.join(modsDir, dirPath);
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`Directory not found: ${fullPath}`);
+  }
+  return fs.readdirSync(fullPath);
+});
+
+ipcMain.handle('path_exists', (_event, { path: checkPath }) => {
+  const fullPath = path.join(modsDir, checkPath);
+  return fs.existsSync(fullPath);
+});
+
+// Shell operations
+ipcMain.handle('shell:run', (_event, { command, cwd }) => {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/bash', ['-lc', command], { 
+      cwd: cwd ? path.join(modsDir, cwd) : modsDir, 
+      timeout: 30000, 
+      maxBuffer: 1024 * 1024 
+    }, (error, stdout, stderr) => {
+      resolve({ code: error?.code ?? 0, stdout, stderr });
+    });
+  });
+});
+
+// ============================================================
+// Settings and Mod Management
+// ============================================================
+ipcMain.handle('settings:read', () => ({ ...defaultSettings, ...readJson(settingsPath, {}) }));
+ipcMain.handle('settings:write', (_event, changes) => {
+  const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
+  writeJson(settingsPath, settings);
+  return settings;
+});
+
 ipcMain.handle('mods:list', () => discoverMods());
 ipcMain.handle('mods:toggle', (_event, id) => {
   const mod = discoverMods().find((item) => item.id === id);
@@ -74,80 +136,57 @@ ipcMain.handle('mods:toggle', (_event, id) => {
   return config[id];
 });
 
+// ============================================================
+// Updates
+// ============================================================
+ipcMain.handle('updates:check', () => ({ available: false }));
+ipcMain.handle('updates:install', () => ({ installed: false, available: false }));
+
+// ============================================================
+// Legacy Backwards Compatibility
+// ============================================================
+
+// Old mods:callBackend endpoint - redirects to new system
 ipcMain.handle('mods:callBackend', async (_event, { modId, functionName, args }) => {
-  const mod = discoverMods().find((m) => m.id === modId);
-  if (!mod) throw new Error(`Mod not found: ${modId}`);
+  console.warn('[Electron] mods:callBackend is deprecated. Use direct API calls.');
   
-  const backendPath = path.join(modsDir, modId, 'backend.lua');
-  if (!fs.existsSync(backendPath)) throw new Error(`Backend not found for mod ${modId}`);
-  
-  // Core mod backend functions
+  // Route to new endpoints based on modId and functionName
   if (modId === 'core') {
     if (functionName === 'read_settings') {
-      return JSON.stringify(readJson(settingsPath, {}));
+      return JSON.stringify(await ipcMain.handle('settings:read')());
     }
     if (functionName === 'write_settings') {
       const changes = JSON.parse(args[0] || '{}');
-      const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
-      writeJson(settingsPath, settings);
-      return JSON.stringify(settings);
+      return JSON.stringify(await ipcMain.handle('settings:write', { changes }));
     }
     if (functionName === 'toggle_mod') {
-      const id = args[0];
-      const modToToggle = discoverMods().find((m) => m.id === id);
-      if (!modToToggle || modToToggle.core) return modToToggle ? modToToggle.enabled : false;
-      const config = readJson(configPath, {});
-      config[id] = !modToToggle.enabled;
-      writeJson(configPath, config);
-      return config[id];
+      return await ipcMain.handle('mods:toggle', args[0]);
     }
   }
   
-  // IDE mod backend functions
-  if (modId === 'ide' && functionName === 'run_command') {
-    const command = args[0] || '';
-    const cwd = args[1] || modsDir;
-    return new Promise((resolve) => {
-      execFile('/usr/bin/bash', ['-lc', command], { 
-        cwd: cwd !== '' ? cwd : undefined, 
-        timeout: 30000, 
-        maxBuffer: 1024 * 1024 
-      }, (error, stdout, stderr) => {
-        resolve({ code: error?.code ?? 0, stdout, stderr });
-      });
-    });
+  if (modId === 'music-player' && functionName === 'ensure_uploads_dir') {
+    return await ipcMain.handle('ensure_dir', { path: 'music-uploads' });
   }
   
-  // Music Player mod backend functions
-  if (modId === 'music-player' && functionName === 'ensure_uploads_dir') {
-    const uploadsDir = path.join(app.getPath('userData'), 'music-uploads');
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    return uploadsDir;
+  if (modId === 'ide' && functionName === 'run_command') {
+    return await ipcMain.handle('shell:run', { command: args[0], cwd: args[1] || '' });
   }
   
   throw new Error(`Unknown backend function: ${modId}.${functionName}`);
 });
-ipcMain.handle('settings:read', () => ({ ...defaultSettings, ...readJson(settingsPath, {}) }));
-ipcMain.handle('settings:write', (_event, changes) => {
-  const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
-  writeJson(settingsPath, settings);
-  return settings;
-});
-ipcMain.handle('updates:check', () => ({ available: false }));
-ipcMain.handle('updates:install', () => ({ installed: false, available: false }));
+
+// Old native:invoke endpoint - redirects to new system
 ipcMain.handle('native:invoke', (_event, { method, payload } = {}) => {
+  console.warn('[Electron] native:invoke is deprecated.');
+  
   if (method === 'ensure_music_uploads_dir') {
-    const uploadsDir = path.join(app.getPath('userData'), 'music-uploads');
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    return uploadsDir;
+    return ipcMain.handle('ensure_dir', { path: 'music-uploads' });
   }
-  if (method !== 'shell.run') throw new Error(`Unknown native method: ${method}`);
-  return new Promise((resolve) => {
-    const { command, cwd } = payload || {};
-    execFile('/usr/bin/bash', ['-lc', command], { cwd: cwd || modsDir, timeout: 30000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      resolve({ code: error?.code ?? 0, stdout, stderr });
-    });
-  });
+  if (method === 'shell.run') {
+    return ipcMain.handle('shell:run', payload);
+  }
+  
+  throw new Error(`Unknown native method: ${method}`);
 });
 
 function createWindow() {
@@ -155,6 +194,7 @@ function createWindow() {
     width: 1280,
     height: 900,
     title: 'modapp',
+    icon: path.join(rootDir, 'src-tauri', 'icons', 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

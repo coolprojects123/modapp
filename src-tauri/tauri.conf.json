@@ -19,12 +19,13 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/mods/**"]
+        "scope": ["$APPDATA/mods/**", "$APPDATA/mod-data/**"]
       }
     }
   },
   "bundle": {
     "active": true,
+    "category": "Utility",
     "targets": ["deb", "rpm"],
     "icon": [
       "icons/icon.png",

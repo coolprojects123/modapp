@@ -12,7 +12,7 @@ use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_SETTINGS: &str = r##"{
   "siteTitle": "modapp",
-  "siteIcon": "M",
+    "siteIcon": "M",
   "tagline": "a modular desktop app",
   "defaultTab": "home",
   "accentColor": "#3b82f6",
@@ -41,6 +41,37 @@ fn mod_data_dir(app: &AppHandle, mod_id: &str) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+fn system_data_path(app: &AppHandle, mod_id: &str, path: &str) -> Result<PathBuf, String> {
+    if mod_id.is_empty() || mod_id == "." || mod_id == ".." || mod_id.contains('/') || mod_id.contains('\\') {
+        return Err("invalid mod id".into());
+    }
+    if Path::new(path).is_absolute() {
+        return Err("path must be relative".into());
+    }
+    let relative = Path::new(path);
+    if relative.components().any(|component| {
+        matches!(component, std::path::Component::ParentDir)
+    }) {
+        return Err("path traversal is not allowed".into());
+    }
+    Ok(mod_data_dir(app, mod_id)?.join(relative))
+}
+
+fn require_fs_permission(app: &AppHandle, mod_id: &str, permission: &str) -> Result<(), String> {
+    if !mod_permissions(app, mod_id)?.contains(permission) {
+        return Err(format!("mod '{mod_id}' lacks permission '{permission}'"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn system_ensure_dir(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
+    require_fs_permission(&app, &mod_id, "fs.ensure_dir")?;
+    let directory = system_data_path(&app, &mod_id, &path)?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok(directory.to_string_lossy().to_string())
+}
+
 fn copy_dir(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
@@ -49,7 +80,7 @@ fn copy_dir(source: &Path, target: &Path) -> Result<(), String> {
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
             copy_dir(&source_path, &target_path)?;
-        } else if !target_path.exists() || entry.file_name() == "mod.json" {
+        } else {
             fs::copy(source_path, target_path).map_err(|error| error.to_string())?;
         }
     }
@@ -157,6 +188,87 @@ fn list_mods(app: AppHandle) -> Result<Vec<Value>, String> {
     }
 
     Ok(mods)
+}
+
+#[tauri::command]
+fn system_read_file(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
+    require_fs_permission(&app, &mod_id, "fs.read")?;
+    fs::read_to_string(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_write_file(app: AppHandle, mod_id: String, path: String, content: String) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "fs.write")?;
+    let file = system_data_path(&app, &mod_id, &path)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(file, content).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_read_dir(app: AppHandle, mod_id: String, path: String) -> Result<Vec<String>, String> {
+    require_fs_permission(&app, &mod_id, "fs.read_dir")?;
+    let directory = system_data_path(&app, &mod_id, &path)?;
+    fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn system_path_exists(app: AppHandle, mod_id: String, path: String) -> Result<bool, String> {
+    require_fs_permission(&app, &mod_id, "fs.read")?;
+    Ok(system_data_path(&app, &mod_id, &path)?.exists())
+}
+
+#[tauri::command]
+fn system_resolve_path(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
+    require_fs_permission(&app, &mod_id, "fs.read")?;
+    Ok(system_data_path(&app, &mod_id, &path)?.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn system_remove_file(app: AppHandle, mod_id: String, path: String) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "fs.remove")?;
+    fs::remove_file(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_remove_dir(app: AppHandle, mod_id: String, path: String) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "fs.remove")?;
+    fs::remove_dir_all(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_read_bytes(app: AppHandle, mod_id: String, path: String) -> Result<Vec<u8>, String> {
+    require_fs_permission(&app, &mod_id, "fs.read")?;
+    fs::read(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_write_bytes(app: AppHandle, mod_id: String, path: String, content: Vec<u8>) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "fs.write")?;
+    let file = system_data_path(&app, &mod_id, &path)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(file, content).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn system_move(app: AppHandle, mod_id: String, from: String, to: String) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "fs.move")?;
+    let source = system_data_path(&app, &mod_id, &from)?;
+    let destination = system_data_path(&app, &mod_id, &to)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::rename(source, destination).map_err(|error| error.to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -404,6 +516,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_mods,
             call_mod_backend,
+            system_ensure_dir,
+            system_read_file,
+            system_write_file,
+            system_read_dir,
+            system_path_exists,
+            system_resolve_path,
+            system_remove_file,
+            system_remove_dir,
+            system_read_bytes,
+            system_write_bytes,
+            system_move,
             check_for_updates,
             install_update
         ])

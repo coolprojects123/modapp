@@ -31,6 +31,7 @@
 
   let activeTabId = null;
   const openWidgets = new Map();
+  const tabViews = new Map();
 
   // ---------------- bare shell ----------------
   const app = document.getElementById('app');
@@ -216,21 +217,31 @@
     content.classList.add('fading');
     await new Promise((r) => setTimeout(r, 90));
 
-    const override = window.ModAPI._overrides.get(id);
-    const modTab = window.ModAPI._tabs.get(id);
+    let view = tabViews.get(id);
+    if (!view) {
+      view = document.createElement('div');
+      view.className = 'tab-view';
+      view.dataset.tabId = id;
+      view.hidden = true;
+      content.appendChild(view);
+      tabViews.set(id, view);
 
-    try {
-      if (override) await override(content);
-      else if (modTab) await modTab.render(content);
-      else content.innerHTML = '';
-    } catch (err) {
-      content.innerHTML = `<p class="error">This tab failed to load: ${err.message}</p>`;
+      const override = window.ModAPI._overrides.get(id);
+      const modTab = window.ModAPI._tabs.get(id);
+      try {
+        if (override) await override(view);
+        else if (modTab) await modTab.render(view);
+      } catch (err) {
+        view.innerHTML = `<p class="error">This tab failed to load: ${err.message}</p>`;
+      }
+
+      const hooks = window.ModAPI._activateHooks.get(id) || [];
+      for (const hook of hooks) {
+        try { hook(view); } catch (err) { console.error('[mods] activate hook failed:', err); }
+      }
     }
 
-    const hooks = window.ModAPI._activateHooks.get(id) || [];
-    for (const hook of hooks) {
-      try { hook(content); } catch (err) { console.error('[mods] activate hook failed:', err); }
-    }
+    for (const [tabId, tabView] of tabViews) tabView.hidden = tabId !== id;
 
     content.classList.remove('fading');
   }
