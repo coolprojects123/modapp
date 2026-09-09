@@ -31,7 +31,7 @@
       "icons/icon.png",
       "icons/icon.svg"
     ],
-    "resources": ["../mods", "../settings.json", "../mods-config.json"]
+    "resources": ["../mods", "../mods-config.json"]
   },
   "plugins": {
     "updater": {
