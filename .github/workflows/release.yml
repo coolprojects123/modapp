@@ -18,10 +18,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: .apt-cache/archives
+          key: ${{ runner.os }}-apt-tauri-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-tauri-
+
       - name: Install Tauri dependencies
         run: |
           sudo apt-get update
+          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/archives/partial"
           sudo apt-get install -y \
+            -o Dir::Cache::archives="$GITHUB_WORKSPACE/.apt-cache/archives" \
             build-essential \
             curl \
             file \
@@ -43,6 +53,13 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust and Tauri build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: modapp-tauri-release
+          cache-on-failure: true
 
       - name: Build Tauri packages
         run: npm run tauri:build
