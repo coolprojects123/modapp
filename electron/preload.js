@@ -27,6 +27,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   shell: {
     run: (command, cwd) => ipcRenderer.invoke('shell:run', { command, cwd }),
   },
+
+  // Webview API (mod-embedded native browser views)
+  webview: {
+    create: (modId, instance, url, x, y, width, height) =>
+      ipcRenderer.invoke('webview:create', { modId, instance, url, x, y, width, height }),
+    close: (modId, instance) => ipcRenderer.invoke('webview:close', { modId, instance }),
+    setVisible: (modId, instance, visible) =>
+      ipcRenderer.invoke('webview:setVisible', { modId, instance, visible }),
+    setBounds: (modId, instance, x, y, width, height) =>
+      ipcRenderer.invoke('webview:setBounds', { modId, instance, x, y, width, height }),
+  },
   
   // Legacy endpoints (deprecated but kept for backwards compatibility)
   invoke: (method, payload) => ipcRenderer.invoke('native:invoke', { method, payload }),

@@ -11,7 +11,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "devtools", "unstable"] }
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -19,3 +19,24 @@ uuid = { version = "1", features = ["v4"] }
 
 # NEW: embedded Lua for per-mod backend scripts
 mlua = { version = "0.9", features = ["lua54", "vendored"] }
+tauri-plugin-opener = "2"
+
+# Only for reaching WebKitSettings (e.g. enable-encrypted-media) on the
+# mod-webview — the version here must resolve to the same one Tauri itself
+# pulls in internally, or webview.inner() won't type-check against it. If
+# `cargo build` errors about mismatched webkit2gtk types, run
+# `cargo tree -i webkit2gtk` and pin this to whatever version Tauri resolved.
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_20"] }
+
+# Only for reaching ICoreWebView2Settings (context menu / autofill toggles)
+# on the mod-webview via PlatformWebview::controller() -- same caveat as
+# webkit2gtk above: these versions must resolve to whatever Tauri's own
+# wry/tauri-runtime-wry pulled in internally, or the ICoreWebView2Controller
+# type returned by controller() won't match the one this crate expects.
+# After a first `cargo build` attempt, run `cargo tree -i webview2-com` and
+# `cargo tree -i windows` and pin these to whatever versions were actually
+# resolved if you hit a type mismatch.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation"] }

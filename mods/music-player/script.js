@@ -130,47 +130,74 @@ const ID3Parser = {
       
       // Byte 5: flags
       // Bytes 6-9: size (synchsafe integer)
+      const headerFlags = uint8Array[5];
       const size = this.parseSynchsafeInteger(uint8Array.slice(6, 10));
-      
-      // Parse extended header if present
-      let offset = 10;
-      
-      // Check for extended header flag
-      if (uint8Array[5] & 0x40) {
+
+      // ID3v2.2 uses 3-character frame IDs with a 6-byte frame header
+      // (3-byte ID + 3-byte plain size, no flags, no synchsafe encoding).
+      // ID3v2.3/2.4 use 4-character IDs with a 10-byte header (synchsafe
+      // size in v2.4, plain-but-still-4-byte size in v2.3).
+      const isV22 = majorVersion === 2;
+      const frameIdLen = isV22 ? 3 : 4;
+      const frameHeaderLen = isV22 ? 6 : 10;
+
+      // Whole-tag unsynchronisation (byte 5, bit 0x80): every inserted
+      // 0xFF 0x00 pair must be stripped before frames are read, or frame
+      // boundaries and text will be corrupted.
+      let tagBody = uint8Array.slice(10, 10 + size);
+      if (headerFlags & 0x80) {
+        tagBody = this.removeUnsynchronisation(tagBody);
+      }
+
+      // Parse extended header if present (v2.3/2.4 only; not used in v2.2)
+      let offset = 0;
+      if (!isV22 && (headerFlags & 0x40)) {
         // Extended header size (4 bytes synchsafe)
-        const extHeaderSize = this.parseSynchsafeInteger(uint8Array.slice(offset, offset + 4));
+        const extHeaderSize = this.parseSynchsafeInteger(tagBody.slice(offset, offset + 4));
         offset += 4 + extHeaderSize;
       }
       
       // Parse frames
       const tags = {};
-      const endOffset = offset + size;
+      const endOffset = tagBody.length;
       
-      while (offset + 10 <= endOffset && offset + 10 <= uint8Array.length) {
-        // Frame ID (4 bytes)
-        const frameId = String.fromCharCode(
-          uint8Array[offset],
-          uint8Array[offset + 1],
-          uint8Array[offset + 2],
-          uint8Array[offset + 3]
-        );
+      while (offset + frameHeaderLen <= endOffset) {
+        // Frame ID (3 or 4 bytes depending on version)
+        let frameId = '';
+        for (let i = 0; i < frameIdLen; i++) frameId += String.fromCharCode(tagBody[offset + i]);
+
+        // Padding reached (null byte where an ID should start)
+        if (tagBody[offset] === 0) break;
+
+        let frameSize;
+        if (isV22) {
+          // 3-byte plain (not synchsafe) integer
+          frameSize = (tagBody[offset + 3] << 16) | (tagBody[offset + 4] << 8) | tagBody[offset + 5];
+        } else if (majorVersion === 4) {
+          frameSize = this.parseSynchsafeInteger(tagBody.slice(offset + 4, offset + 8));
+        } else {
+          // v2.3 frame sizes are a plain 4-byte big-endian integer, not synchsafe
+          frameSize = (tagBody[offset + 4] << 24) | (tagBody[offset + 5] << 16) | (tagBody[offset + 6] << 8) | tagBody[offset + 7];
+        }
         
-        // Frame size (4 bytes synchsafe)
-        const frameSize = this.parseSynchsafeInteger(uint8Array.slice(offset + 4, offset + 8));
-        
-        // Frame flags (2 bytes)
-        const frameFlags = uint8Array.slice(offset + 8, offset + 10);
-        
-        offset += 10;
+        offset += frameHeaderLen;
         
         // Skip frame if we don't have enough data
-        if (offset + frameSize > uint8Array.length) break;
+        if (offset + frameSize > tagBody.length || frameSize < 0) break;
         
         // Parse frame content
-        const frameData = uint8Array.slice(offset, offset + frameSize);
+        const frameData = tagBody.slice(offset, offset + frameSize);
         
+        // Map v2.2's 3-char IDs to the v2.3/2.4 equivalents so downstream
+        // naming logic doesn't need to know which version it's reading.
+        const v22ToV23 = {
+          'TT2': 'TIT2', 'TP1': 'TPE1', 'TAL': 'TALB', 'TYE': 'TYER',
+          'TCO': 'TCON', 'TCM': 'TCOM', 'TRK': 'TRCK', 'PIC': 'APIC',
+        };
+        const canonicalId = isV22 ? (v22ToV23[frameId] || frameId) : frameId;
+
         // Handle text frames
-        if (frameId.startsWith('T')) {
+        if (canonicalId.startsWith('T')) {
           const text = this.parseTextFrame(frameData, majorVersion);
           if (text) {
             // Map common frame IDs to friendly names
@@ -183,13 +210,13 @@ const ID3Parser = {
               'TCOM': 'composer',
               'TRCK': 'trackNumber'
             };
-            const key = frameNames[frameId] || frameId.toLowerCase();
+            const key = frameNames[canonicalId] || canonicalId.toLowerCase();
             tags[key] = text;
           }
         }
-        // Handle picture frames (APIC)
-        else if (frameId === 'APIC') {
-          const artwork = this.parseAPICFrame(frameData);
+        // Handle picture frames (APIC in v2.3/2.4, PIC in v2.2)
+        else if (canonicalId === 'APIC') {
+          const artwork = this.parseAPICFrame(frameData, isV22);
           if (artwork) tags.artwork = artwork;
         }
         
@@ -205,17 +232,26 @@ const ID3Parser = {
   
   // APIC frame layout: [encoding:1][MIME type, null-terminated][picture type:1]
   // [description, null-terminated in `encoding`][raw image bytes: rest of frame]
-  parseAPICFrame: function(frameData) {
+  parseAPICFrame: function(frameData, isV22 = false) {
     try {
       if (!frameData || frameData.length < 4) return null;
       const encoding = frameData[0];
       let offset = 1;
-      
-      let mimeEnd = offset;
-      while (mimeEnd < frameData.length && frameData[mimeEnd] !== 0) mimeEnd++;
-      let mimeType = String.fromCharCode.apply(null, frameData.slice(offset, mimeEnd)) || 'image/jpeg';
-      if (mimeType === '-->') mimeType = null; // link to external image, not embedded data — skip
-      offset = mimeEnd + 1;
+
+      let mimeType;
+      if (isV22) {
+        // PIC frame: 3-char image format code ('JPG'/'PNG'/etc), not
+        // null-terminated, no free-text MIME string.
+        const format = String.fromCharCode(frameData[1], frameData[2], frameData[3]).toUpperCase();
+        mimeType = format === 'PNG' ? 'image/png' : format === 'JPG' ? 'image/jpeg' : format === 'LINK' ? null : `image/${format.toLowerCase()}`;
+        offset = 4;
+      } else {
+        let mimeEnd = offset;
+        while (mimeEnd < frameData.length && frameData[mimeEnd] !== 0) mimeEnd++;
+        mimeType = String.fromCharCode.apply(null, frameData.slice(offset, mimeEnd)) || 'image/jpeg';
+        if (mimeType === '-->') mimeType = null; // link to external image, not embedded data — skip
+        offset = mimeEnd + 1;
+      }
       
       const pictureType = frameData[offset];
       offset += 1;
@@ -248,9 +284,21 @@ const ID3Parser = {
   parseSynchsafeInteger: function(bytes) {
     let result = 0;
     for (let i = 0; i < bytes.length; i++) {
-      result = (result << 7) | bytes[i];
+      result = (result << 7) | (bytes[i] & 0x7f);
     }
     return result;
+  },
+
+  // Strip ID3v2 unsynchronisation: every 0xFF 0x00 pair inserted by the
+  // encoder to avoid false MPEG sync signals must be collapsed back to 0xFF.
+  removeUnsynchronisation: function(bytes) {
+    const out = new Uint8Array(bytes.length);
+    let j = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      out[j++] = bytes[i];
+      if (bytes[i] === 0xff && bytes[i + 1] === 0x00) i++;
+    }
+    return out.slice(0, j);
   },
   
   // Parse text frame content
@@ -261,12 +309,25 @@ const ID3Parser = {
     const encoding = data[0];
     const textData = data.slice(1);
     
-    // Find null terminator(s)
+    // Find null terminator(s). UTF-16 encodings (1, 2) use a 2-byte
+    // terminator (0x00 0x00) since 0x00 alone is a valid half of a
+    // UTF-16 code unit for any ASCII-range character — scanning for a
+    // single 0x00 there truncates the text after its first character.
+    const isDoubleByte = encoding === 1 || encoding === 2;
     let end = textData.length;
-    for (let i = 0; i < textData.length; i++) {
-      if (textData[i] === 0) {
-        end = i;
-        break;
+    if (isDoubleByte) {
+      for (let i = 0; i + 1 < textData.length; i += 2) {
+        if (textData[i] === 0 && textData[i + 1] === 0) {
+          end = i;
+          break;
+        }
+      }
+    } else {
+      for (let i = 0; i < textData.length; i++) {
+        if (textData[i] === 0) {
+          end = i;
+          break;
+        }
       }
     }
     
@@ -470,7 +531,7 @@ function parseStreamingUrl(raw) {
 
     if (host === 'open.spotify.com') {
       if (u.pathname.startsWith('/embed')) return { service: 'spotify', embed: raw };
-      return { service: 'spotify', embed: `https://open.spotify.com/embed${u.pathname}?utm_source=generator&theme=0` };
+      return { service: 'spotify', embed: `https://open.spotify.com/embed${u.pathname}?utm_source=generator&theme=1` };
     }
 
     if (host === 'music.apple.com' || host === 'embed.music.apple.com') {
@@ -647,6 +708,7 @@ function renderMusicPlayer(container) {
               <span class="material-symbols-outlined">music_note</span>
             </div>
             <div class="now-playing-details">
+              <div class="now-playing-eyebrow">Now Playing</div>
               <div class="now-playing-title" id="now-playing-title">No media selected</div>
               <div class="now-playing-artist" id="now-playing-artist">Upload files to get started</div>
               <div class="now-playing-tags" id="now-playing-tags"></div>
@@ -957,7 +1019,7 @@ function renderMusicPlayer(container) {
     if (file.tags && file.tags.artwork && file.tags.artwork.data && file.tags.artwork.data.length > 0) {
       const blob = new Blob([file.tags.artwork.data], { type: file.tags.artwork.mimeType || 'image/jpeg' });
       currentArtworkUrl = URL.createObjectURL(blob);
-      nowPlayingArtwork.innerHTML = `<img src="${currentArtworkUrl}" alt="Album art" style="width:100%;height:100%;object-fit:cover;border-radius:inherit;">`;
+      nowPlayingArtwork.innerHTML = `<img src="${currentArtworkUrl}" alt="Album art">`;
     } else {
       nowPlayingArtwork.innerHTML = getMediaThumbnail(file, file.type);
     }

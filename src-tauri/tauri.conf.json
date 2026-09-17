@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "identifier": "com.modapp.desktop",
   "build": {
-    "frontendDist": "../public"
+    "frontendDist": "../public",
+    "devUrl": "http://127.0.0.1:1430",
+    "beforeDevCommand": "node scripts/dev-server.js"
   },
   "app": {
     "withGlobalTauri": true,
@@ -26,7 +28,7 @@
   "bundle": {
     "active": true,
     "category": "Utility",
-    "targets": ["deb", "rpm"],
+    "targets": ["deb", "rpm", "appimage"],
     "icon": [
       "icons/icon.png",
       "icons/icon.svg"

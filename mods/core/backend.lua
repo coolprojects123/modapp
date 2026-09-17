@@ -15,3 +15,9 @@ end
 function toggle_mod(id)
     return mods_toggle(id)
 end
+
+-- New FS API: ensure a directory exists within the mod's sandboxed data directory.
+-- Any mod can call this via ModAPI.native.callBackend('core', 'ensure_uploads_dir', [path]).
+function ensure_uploads_dir(path)
+    return ensure_dir(path)
+end

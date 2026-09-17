@@ -9,27 +9,26 @@
   },
   "main": "electron/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --no-sandbox --disable-gpu --disable-software-rasterizer --disable-gpu-sandbox --in-process-gpu",
     "build:electron": "electron-builder",
     "build:electron:linux": "electron-builder --linux",
     "build:electron:rpm": "electron-builder --linux rpm",
-    "prepare": "node scripts/prepare-web-assets.js",
-    "release:notes": "node scripts/generate-release-notes.js",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.5.0"
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "electron": "^44.3.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.5.0",
-    "electron": "^43.3.0",
     "electron-builder": "^26.15.3"
   },
   "allowScripts": {
     "electron@43.3.0": true,
     "electron-builder@26.15.3": true,
-    "electron-winstaller@5.4.0": true
+    "electron-winstaller": true
   },
   "build": {
     "appId": "com.modapp.desktop",

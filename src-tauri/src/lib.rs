@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl, Window};
 use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_SETTINGS: &str = r##"{
@@ -42,16 +42,22 @@ fn mod_data_dir(app: &AppHandle, mod_id: &str) -> Result<PathBuf, String> {
 }
 
 fn system_data_path(app: &AppHandle, mod_id: &str, path: &str) -> Result<PathBuf, String> {
-    if mod_id.is_empty() || mod_id == "." || mod_id == ".." || mod_id.contains('/') || mod_id.contains('\\') {
+    if mod_id.is_empty()
+        || mod_id == "."
+        || mod_id == ".."
+        || mod_id.contains('/')
+        || mod_id.contains('\\')
+    {
         return Err("invalid mod id".into());
     }
     if Path::new(path).is_absolute() {
         return Err("path must be relative".into());
     }
     let relative = Path::new(path);
-    if relative.components().any(|component| {
-        matches!(component, std::path::Component::ParentDir)
-    }) {
+    if relative
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err("path traversal is not allowed".into());
     }
     Ok(mod_data_dir(app, mod_id)?.join(relative))
@@ -119,7 +125,12 @@ fn mod_permissions(app: &AppHandle, mod_id: &str) -> Result<HashSet<String>, Str
     Ok(manifest
         .get("permissions")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default())
 }
 
@@ -128,7 +139,10 @@ fn mod_enabled(app: &AppHandle, mod_id: &str) -> Result<bool, String> {
         return Ok(true);
     }
     let manifest = mod_manifest(app, mod_id)?;
-    let config = read_json(&mods_dir(app)?.join(".config.json"), Value::Object(Map::new()));
+    let config = read_json(
+        &mods_dir(app)?.join(".config.json"),
+        Value::Object(Map::new()),
+    );
     Ok(config
         .get(mod_id)
         .and_then(Value::as_bool)
@@ -197,7 +211,12 @@ fn system_read_file(app: AppHandle, mod_id: String, path: String) -> Result<Stri
 }
 
 #[tauri::command]
-fn system_write_file(app: AppHandle, mod_id: String, path: String, content: String) -> Result<(), String> {
+fn system_write_file(
+    app: AppHandle,
+    mod_id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
     require_fs_permission(&app, &mod_id, "fs.write")?;
     let file = system_data_path(&app, &mod_id, &path)?;
     if let Some(parent) = file.parent() {
@@ -229,7 +248,9 @@ fn system_path_exists(app: AppHandle, mod_id: String, path: String) -> Result<bo
 #[tauri::command]
 fn system_resolve_path(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
     require_fs_permission(&app, &mod_id, "fs.read")?;
-    Ok(system_data_path(&app, &mod_id, &path)?.to_string_lossy().to_string())
+    Ok(system_data_path(&app, &mod_id, &path)?
+        .to_string_lossy()
+        .to_string())
 }
 
 #[tauri::command]
@@ -251,7 +272,12 @@ fn system_read_bytes(app: AppHandle, mod_id: String, path: String) -> Result<Vec
 }
 
 #[tauri::command]
-fn system_write_bytes(app: AppHandle, mod_id: String, path: String, content: Vec<u8>) -> Result<(), String> {
+fn system_write_bytes(
+    app: AppHandle,
+    mod_id: String,
+    path: String,
+    content: Vec<u8>,
+) -> Result<(), String> {
     require_fs_permission(&app, &mod_id, "fs.write")?;
     let file = system_data_path(&app, &mod_id, &path)?;
     if let Some(parent) = file.parent() {
@@ -279,7 +305,11 @@ fn system_move(app: AppHandle, mod_id: String, from: String, to: String) -> Resu
 // none of them get their own dedicated command.
 // ---------------------------------------------------------------------
 
-fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -> Result<Lua, String> {
+fn build_lua_env(
+    app: &AppHandle,
+    mod_id: &str,
+    permissions: &HashSet<String>,
+) -> Result<Lua, String> {
     // Empty stdlib: no io/os/package/debug baked in. A script can only ever
     // reach what's explicitly installed below.
     let lua = Lua::new_with(mlua::StdLib::NONE, mlua::LuaOptions::default())
@@ -303,7 +333,9 @@ fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -
                     Ok(dir.to_string_lossy().to_string())
                 })
                 .map_err(|error| error.to_string())?;
-            globals.set("ensure_dir", f).map_err(|error| error.to_string())?;
+            globals
+                .set("ensure_dir", f)
+                .map_err(|error| error.to_string())?;
         }
 
         // ---- settings.read / settings.write: app-wide settings, Core-only in practice ----
@@ -321,14 +353,17 @@ fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -
                     serde_json::to_string(&settings).map_err(mlua::Error::external)
                 })
                 .map_err(|error| error.to_string())?;
-            globals.set("settings_read", f).map_err(|error| error.to_string())?;
+            globals
+                .set("settings_read", f)
+                .map_err(|error| error.to_string())?;
         }
 
         if permissions.contains("settings.write") {
             let directory = mods_dir(app)?;
             let f = lua
                 .create_function(move |_, changes_json: String| {
-                    let changes: Value = serde_json::from_str(&changes_json).map_err(mlua::Error::external)?;
+                    let changes: Value =
+                        serde_json::from_str(&changes_json).map_err(mlua::Error::external)?;
                     let mut settings: Value =
                         serde_json::from_str(DEFAULT_SETTINGS).map_err(mlua::Error::external)?;
                     if let Value::Object(saved) =
@@ -336,14 +371,19 @@ fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -
                     {
                         settings.as_object_mut().unwrap().extend(saved);
                     }
-                    if let (Some(current), Some(changes)) = (settings.as_object_mut(), changes.as_object()) {
+                    if let (Some(current), Some(changes)) =
+                        (settings.as_object_mut(), changes.as_object())
+                    {
                         current.extend(changes.clone());
                     }
-                    write_json(&directory.join(".settings.json"), &settings).map_err(mlua::Error::external)?;
+                    write_json(&directory.join(".settings.json"), &settings)
+                        .map_err(mlua::Error::external)?;
                     serde_json::to_string(&settings).map_err(mlua::Error::external)
                 })
                 .map_err(|error| error.to_string())?;
-            globals.set("settings_write", f).map_err(|error| error.to_string())?;
+            globals
+                .set("settings_write", f)
+                .map_err(|error| error.to_string())?;
         }
 
         // ---- mods.toggle: flips a mod's enabled state in .config.json ----
@@ -366,7 +406,9 @@ fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -
                     Ok(!current)
                 })
                 .map_err(|error| error.to_string())?;
-            globals.set("mods_toggle", f).map_err(|error| error.to_string())?;
+            globals
+                .set("mods_toggle", f)
+                .map_err(|error| error.to_string())?;
         }
 
         // ---- shell.run: arbitrary command execution. Powerful -- only ever
@@ -378,21 +420,252 @@ fn build_lua_env(app: &AppHandle, mod_id: &str, permissions: &HashSet<String>) -
                     let output = std::process::Command::new("/usr/bin/bash")
                         .arg("-lc")
                         .arg(&command)
-                        .current_dir(cwd.map(PathBuf::from).unwrap_or_else(|| default_cwd.clone()))
+                        .current_dir(
+                            cwd.map(PathBuf::from)
+                                .unwrap_or_else(|| default_cwd.clone()),
+                        )
                         .output()
                         .map_err(mlua::Error::external)?;
                     let table = lua.create_table()?;
                     table.set("code", output.status.code().unwrap_or(1))?;
-                    table.set("stdout", String::from_utf8_lossy(&output.stdout).to_string())?;
-                    table.set("stderr", String::from_utf8_lossy(&output.stderr).to_string())?;
+                    table.set(
+                        "stdout",
+                        String::from_utf8_lossy(&output.stdout).to_string(),
+                    )?;
+                    table.set(
+                        "stderr",
+                        String::from_utf8_lossy(&output.stderr).to_string(),
+                    )?;
                     Ok(table)
                 })
                 .map_err(|error| error.to_string())?;
-            globals.set("run_shell", f).map_err(|error| error.to_string())?;
+            globals
+                .set("run_shell", f)
+                .map_err(|error| error.to_string())?;
         }
     }
 
     Ok(lua)
+}
+
+// ---------------------------------------------------------------------
+// Mod webviews. Every embedded native webview a mod wants (browser tabs,
+// etc.) goes through here instead of the frontend touching Tauri's own
+// webview commands directly -- that would bypass mod.json permissions
+// entirely, the same way calling into another mod's backend.lua would.
+// Owning creation here also means UA/header behavior lives in one place
+// instead of being duplicated (and drifting) across every mod that wants
+// a webview.
+// ---------------------------------------------------------------------
+
+/// Labels are namespaced by mod_id so one mod can never address, hide, or
+/// close a webview belonging to another mod, even by guessing a label.
+fn mod_webview_label(mod_id: &str, instance: &str) -> String {
+    format!("mod-webview-{mod_id}-{instance}")
+}
+
+/// A UA that doesn't match the engine actually rendering it is a bigger
+/// red flag to site-side bot detection than an honest one -- so this picks
+/// the UA per the real host platform rather than hardcoding one.
+fn platform_user_agent() -> &'static str {
+    if cfg!(target_os = "windows") {
+        // WebView2 = real Chromium.
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    } else if cfg!(target_os = "macos") {
+        // WKWebView = real WebKit/Safari.
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    } else {
+        // WebKitGTK.
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+}
+
+/// Converts a rect the frontend gave us in *logical* coordinates relative
+/// to the viewport element into an *absolute screen* physical rect -- what
+/// a separate WebviewWindow's position/size actually need, since (unlike
+/// the old add_child child webview) it's no longer positioned relative to
+/// a parent's client area.
+fn to_screen_rect(
+    window: &Window,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(PhysicalPosition<i32>, PhysicalSize<u32>), String> {
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    // inner_position() -- NOT outer_position() -- since the frontend's
+    // getBoundingClientRect() coordinates are relative to the window's
+    // content area only. outer_position() includes the OS title bar/
+    // window chrome, which would shift everything up/left by that many
+    // pixels -- exactly what caused the mod webview to sit too high and
+    // cover the toolbar above it.
+    let parent_pos = window.inner_position().map_err(|error| error.to_string())?;
+    let physical = LogicalPosition::new(x, y).to_physical::<i32>(scale);
+    let size = LogicalSize::new(width, height).to_physical::<u32>(scale);
+    Ok((
+        PhysicalPosition::new(parent_pos.x + physical.x, parent_pos.y + physical.y),
+        size,
+    ))
+}
+
+// REDESIGNED (previously implemented via Window::add_child, which on
+// Windows has a documented history of real bugs across Tauri/wry versions:
+// child-webview z-order landing behind the parent, blank rendering, and
+// deadlocks when add_child is called synchronously). This uses a separate,
+// parented WebviewWindow instead -- the ordinary top-level window creation
+// path, which doesn't share add_child's child-webview-specific bugs.
+// Borderless + no taskbar entry + position/size synced to the tab's
+// on-screen rect makes it look embedded even though it's architecturally a
+// normal window. Trade-off: unlike a true child webview, it does NOT
+// automatically follow the main window when dragged/resized -- see
+// wire_mod_webview_tracking below, called once from setup().
+#[tauri::command]
+async fn create_mod_webview(
+    app: AppHandle,
+    window: Window,
+    mod_id: String,
+    instance: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "webview.access")?;
+    if !mod_enabled(&app, &mod_id)? {
+        return Err(format!("mod '{mod_id}' is disabled"));
+    }
+
+    let label = mod_webview_label(&mod_id, &instance);
+    if app.get_webview_window(&label).is_some() {
+        return Err(format!("webview '{label}' already exists — close it first"));
+    }
+
+    let parsed_url = Url::parse(&url).map_err(|error| error.to_string())?;
+    let (screen_pos, screen_size) = to_screen_rect(&window, x, y, width, height)?;
+
+    // Window creation must happen on the main thread -- same reasoning as
+    // the old add_child fix, this just applies it to the new API instead.
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let app_for_main_thread = app.clone();
+    window
+        .run_on_main_thread(move || {
+            // .parent() takes a &WebviewWindow, not the raw Window type --
+            // confirmed against a real tauri-plugin-window-system usage
+            // example, since Tauri's own docs don't show this signature
+            // directly. "main" is this app's main window label per
+            // tauri.conf.json (unlabeled window entries default to
+            // "main") -- verify this if that config ever changes.
+            let outcome = app_for_main_thread
+                .get_webview_window("main")
+                .ok_or_else(|| "main window not found".to_string())
+                .and_then(|main_window| {
+                    tauri::WebviewWindowBuilder::new(
+                        &app_for_main_thread,
+                        &label,
+                        WebviewUrl::External(parsed_url),
+                    )
+                    .user_agent(platform_user_agent())
+                    .parent(&main_window)
+                    .map_err(|error| error.to_string())
+                })
+                .and_then(|builder| {
+                    builder
+                        .decorations(false)
+                        .skip_taskbar(true)
+                        .position(screen_pos.x as f64, screen_pos.y as f64)
+                        .inner_size(screen_size.width as f64, screen_size.height as f64)
+                        .visible(true)
+                        .build()
+                        .map_err(|error| error.to_string())
+                })
+                .map(|_webview_window| ());
+            let _ = result_tx.send(outcome);
+        })
+        .map_err(|error| error.to_string())?;
+    // NOTE: this blocks the current async task's thread on a plain
+    // std::sync::mpsc::recv() until the main thread finishes creating the
+    // window. Fine for an infrequent, quick action like this; if this ever
+    // becomes a hot path, swap for tokio::sync::oneshot + .await so it
+    // yields the thread instead of blocking it.
+    result_rx.recv().map_err(|error| error.to_string())??;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn close_mod_webview(app: AppHandle, mod_id: String, instance: String) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance);
+    if let Some(webview_window) = app.get_webview_window(&label) {
+        webview_window.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_mod_webview_visible(
+    app: AppHandle,
+    mod_id: String,
+    instance: String,
+    visible: bool,
+) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance);
+    let Some(webview_window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    if visible {
+        webview_window.show()
+    } else {
+        webview_window.hide()
+    }
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_mod_webview_bounds(
+    app: AppHandle,
+    window: Window,
+    mod_id: String,
+    instance: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    require_fs_permission(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance);
+    let Some(webview_window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let (screen_pos, screen_size) = to_screen_rect(&window, x, y, width, height)?;
+    webview_window
+        .set_position(screen_pos)
+        .map_err(|error| error.to_string())?;
+    webview_window
+        .set_size(screen_size)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+// NEW: since the mod webview is now a separate top-level window rather
+// than a true child webview, it does NOT automatically follow the main
+// window when dragged or resized. Call this once from setup(), after the
+// main window exists, to re-notify the frontend whenever that happens so
+// it can resend each visible mod webview's current logical bounds (the
+// frontend remains the source of truth for layout/CSS, so this doesn't
+// duplicate that state on the Rust side).
+fn wire_mod_webview_tracking(app: &AppHandle, main_window: &tauri::WebviewWindow) {
+    let app_for_event = app.clone();
+    main_window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+        ) {
+            let _ = app_for_event.emit("mod-webview:reposition-needed", ());
+        }
+    });
 }
 
 #[tauri::command]
@@ -415,7 +688,9 @@ fn call_mod_backend(
     let script = fs::read_to_string(&script_path).map_err(|error| error.to_string())?;
 
     let lua = build_lua_env(&app, &mod_id, &permissions)?;
-    lua.load(&script).exec().map_err(|error| error.to_string())?;
+    lua.load(&script)
+        .exec()
+        .map_err(|error| error.to_string())?;
 
     let func: mlua::Function = lua
         .globals()
@@ -493,6 +768,7 @@ async fn install_update(app: AppHandle) -> Result<Value, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let target = mods_dir(app.handle()).map_err(std::io::Error::other)?;
@@ -511,11 +787,18 @@ pub fn run() {
             if bundled.exists() {
                 copy_dir(&bundled, &target).map_err(std::io::Error::other)?;
             }
+            if let Some(main_window) = app.get_webview_window("main") {
+                wire_mod_webview_tracking(&app.handle().clone(), &main_window);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_mods,
             call_mod_backend,
+            create_mod_webview,
+            close_mod_webview,
+            set_mod_webview_visible,
+            set_mod_webview_bounds,
             system_ensure_dir,
             system_read_file,
             system_write_file,

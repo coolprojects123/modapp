@@ -68,6 +68,39 @@ const modAPIImpl = (function () {
         }
         return window.appAPI.callBackend(modIdArg, functionName, args);
       },
+
+      // Native embedded webviews (e.g. an in-app browser tab). Gated by the
+      // single 'webview.access' permission in the calling mod's mod.json —
+      // same permission for create/close/show/hide/reposition, since a mod
+      // that can create one can reasonably manage the ones it created.
+      // `instance` namespaces multiple webviews from the same mod (e.g. one
+      // per open browser tab); modIdArg works the same way as callBackend's.
+      webview: {
+        create(modIdArg, instance, { url, x, y, width, height } = {}) {
+          if (!window.appAPI?.webview) {
+            return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
+          }
+          return window.appAPI.webview.create(modIdArg, instance, url, x, y, width, height);
+        },
+        close(modIdArg, instance) {
+          if (!window.appAPI?.webview) {
+            return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
+          }
+          return window.appAPI.webview.close(modIdArg, instance);
+        },
+        setVisible(modIdArg, instance, visible) {
+          if (!window.appAPI?.webview) {
+            return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
+          }
+          return window.appAPI.webview.setVisible(modIdArg, instance, visible);
+        },
+        setBounds(modIdArg, instance, { x, y, width, height } = {}) {
+          if (!window.appAPI?.webview) {
+            return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
+          }
+          return window.appAPI.webview.setBounds(modIdArg, instance, x, y, width, height);
+        },
+      },
     },
 
     // Adds a brand new tab. render(container) is called each time it's opened.
@@ -134,9 +167,14 @@ const modAPIImpl = (function () {
   };
 })();
 
-// Merge the implementation with any existing ModAPI properties
-// This preserves ModAPI.native that was set by native-api-v2.js
-Object.assign(window.ModAPI, modAPIImpl);
+// Merge the implementation with any existing ModAPI properties.
+// This preserves ModAPI.native that was set by native-api-v2.js.
+// Uses defineProperties (not Object.assign) because modId and identity are
+// accessor getters on modAPIImpl -- Object.assign would invoke each getter
+// once and copy the resulting value as a static property, permanently
+// freezing modId at whatever it was (null, at this point, since no mod has
+// loaded yet) instead of staying live as mods load one by one.
+Object.defineProperties(window.ModAPI, Object.getOwnPropertyDescriptors(modAPIImpl));
 
 async function loadMods() {
   if (window.nativeAPIReady) await window.nativeAPIReady;

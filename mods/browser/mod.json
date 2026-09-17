@@ -1,0 +1,10 @@
+{
+  "id": "browser",
+  "name": "Browser",
+  "version": "1.0.0",
+  "description": "An embedded browser tab, backed by a real native webview (no iframe restrictions).",
+  "enabledByDefault": true,
+  "permissions": ["webview.access"],
+  "styles": ["style.css"],
+  "scripts": ["script.js"]
+}

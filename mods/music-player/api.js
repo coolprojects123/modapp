@@ -47,8 +47,9 @@ ModAPI.music = {
     }
 
     // Fallback to old callBackend system for backwards compatibility
+    // Now using core's ensure_uploads_dir as the new FS API
     if (window.appAPI?.callBackend) {
-      return await ModAPI.native.callBackend('music-player', 'ensure_uploads_dir', []);
+      return await ModAPI.native.callBackend('core', 'ensure_uploads_dir', ['music-uploads']);
     }
 
     // Browser mode - return empty (no FS access)

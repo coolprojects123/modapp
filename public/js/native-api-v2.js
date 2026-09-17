@@ -186,6 +186,13 @@
       return window.electronAPI.invoke('read_dir', { path });
     };
     
+    const electronWebview = window.electronAPI.webview || {
+      create: async () => { throw new Error('This Electron build has no webview API exposed in preload.js.'); },
+      close: async () => { throw new Error('This Electron build has no webview API exposed in preload.js.'); },
+      setVisible: async () => { throw new Error('This Electron build has no webview API exposed in preload.js.'); },
+      setBounds: async () => { throw new Error('This Electron build has no webview API exposed in preload.js.'); },
+    };
+
     // Set up window.appAPI for backwards compatibility
     window.appAPI = {
       listMods: mods.list,
@@ -195,6 +202,7 @@
       checkForUpdates: updates.check,
       installUpdate: updates.install,
       callBackend: nativeAPI.callBackend,
+      webview: electronWebview,
       // Expose the new API
       fs: fs,
       settings: settings,
@@ -325,6 +333,18 @@
       return nativeAPI.callBackend('ide', 'run_command', [command, cwd]);
     };
     
+    // Native embedded webviews — thin wrappers over the Rust commands,
+    // which own permission checks (webview.access) and UA/header logic.
+    const webview = {
+      create: (modId, instance, url, x, y, width, height) =>
+        invokeFn('create_mod_webview', { modId, instance, url, x, y, width, height }),
+      close: (modId, instance) => invokeFn('close_mod_webview', { modId, instance }),
+      setVisible: (modId, instance, visible) =>
+        invokeFn('set_mod_webview_visible', { modId, instance, visible }),
+      setBounds: (modId, instance, x, y, width, height) =>
+        invokeFn('set_mod_webview_bounds', { modId, instance, x, y, width, height }),
+    };
+
     // Set up window.appAPI for backwards compatibility
     window.appAPI = {
       listMods: mods.list,
@@ -334,6 +354,7 @@
       checkForUpdates: updates.check,
       installUpdate: updates.install,
       callBackend: nativeAPI.callBackend,
+      webview: webview,
       // Expose the new API
       fs: fs,
       settings: settings,
@@ -351,6 +372,9 @@
     
     // In browser mode, just use the stub implementations
     // Mods can still work but won't have access to native features
+    const webviewUnavailable = async () => {
+      throw new Error('Native APIs are available in the desktop build only.');
+    };
     window.appAPI = {
       listMods: async () => [],
       toggleMod: async () => false,
@@ -360,6 +384,12 @@
       installUpdate: async () => ({}),
       callBackend: async () => {
         throw new Error('Native APIs are available in the desktop build only.');
+      },
+      webview: {
+        create: webviewUnavailable,
+        close: webviewUnavailable,
+        setVisible: webviewUnavailable,
+        setBounds: webviewUnavailable,
       },
       fs: fs,
       settings: settings,

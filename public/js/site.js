@@ -211,7 +211,7 @@
   // ---------------- tab activation ----------------
   async function activateTab(id) {
     activeTabId = id;
-    main.classList.toggle('full-bleed', id === 'music-player' || id === 'ide');
+    main.classList.toggle('full-bleed', id === 'music-player' || id === 'ide' || id === 'browser');
     [...tabNav.children].forEach((btn) => btn.classList.toggle('active', btn.dataset.id === id));
 
     content.classList.add('fading');
@@ -222,7 +222,7 @@
       view = document.createElement('div');
       view.className = 'tab-view';
       view.dataset.tabId = id;
-      view.hidden = true;
+      view.style.display = 'none';
       content.appendChild(view);
       tabViews.set(id, view);
 
@@ -241,7 +241,7 @@
       }
     }
 
-    for (const [tabId, tabView] of tabViews) tabView.hidden = tabId !== id;
+    for (const [tabId, tabView] of tabViews) tabView.style.display = tabId === id ? '' : 'none';
 
     content.classList.remove('fading');
   }
