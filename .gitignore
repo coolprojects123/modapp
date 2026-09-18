@@ -44,4 +44,6 @@ Thumbs.db
 *.provisionprofile
 *.dmg
 
+# Docker
+Dockerfile
 

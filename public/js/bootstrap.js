@@ -122,7 +122,7 @@ const modAPIImpl = (function () {
     //   noChrome: true   -> skip the generic title+close header; mount()
     //                       gets the whole panel and is responsible for its
     //                       own close affordance (call the passed close())
-    registerWidget({ id, label, icon, mount, center, draggable, overlay, width, height, noChrome }) {
+    registerWidget({ id, label, icon, mount, center, draggable, overlay, width, height, noChrome, onOpen, onClose }) {
       if (!id || typeof mount !== 'function') {
         console.warn('[ModAPI] registerWidget requires an id and a mount(container) function');
         return;
@@ -138,6 +138,8 @@ const modAPIImpl = (function () {
         width: width || null,
         height: height || null,
         noChrome: !!noChrome,
+        onOpen: typeof onOpen === 'function' ? onOpen : null,
+        onClose: typeof onClose === 'function' ? onClose : null,
         source: modId,
       });
       document.dispatchEvent(new CustomEvent('mods:widgets-changed'));
@@ -179,11 +181,17 @@ Object.defineProperties(window.ModAPI, Object.getOwnPropertyDescriptors(modAPIIm
 async function loadMods() {
   if (window.nativeAPIReady) await window.nativeAPIReady;
 
+  // Store full manifests for core mod to access enabled/disabled state
+  if (!window.appAPI) {
+    window.MOD_MANIFESTS_FULL = window.MOD_MANIFESTS.map((mod) => ({
+      ...mod,
+      core: mod.id === 'core'
+    }));
+  }
+
   const mods = window.appAPI
     ? (await window.appAPI.listMods()).filter((mod) => mod.enabled)
-    : window.MOD_MANIFESTS
-      .map((mod) => ({ ...mod, core: mod.id === 'core' }))
-      .filter((mod) => mod.core || mod.enabledByDefault !== false);
+    : window.MOD_MANIFESTS_FULL.filter((mod) => mod.core || mod.enabled);
 
   mods.sort((a, b) => (b.core === true) - (a.core === true));
 

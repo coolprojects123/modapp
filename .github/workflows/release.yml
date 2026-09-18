@@ -1,83 +1,121 @@
 name: Release
 
+# Builds modapp for Linux (.deb + .rpm, via WebKitGTK/GStreamer) and Windows
+# (.msi + .exe, via WebView2) and attaches the results to a GitHub Release.
+#
+# Linux and Windows are genuinely different runtime stacks for this app —
+# see the tauri.conf.json bundle.linux.deb/rpm "depends" entries for why the
+# Linux side needs explicit GStreamer packages at install time; Windows'
+# WebView2/Chromium path has no equivalent requirement.
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*"
+  workflow_dispatch: {}
 
-permissions:
-  contents: write
+# Cancels an in-progress run of this workflow for the same ref when a new
+# one is pushed, so pushing a fixup tag doesn't leave two releases racing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-linux:
-    name: Build Linux packages
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: ""
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: .apt-cache/archives
-          key: ${{ runner.os }}-apt-tauri-${{ hashFiles('.github/workflows/release.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-tauri-
-
-      - name: Install Tauri dependencies
+      # ---------------- Linux-only system dependencies ----------------
+      # WebKitGTK itself, its dev headers (needed at compile time, not just
+      # runtime), and the GStreamer plugin sets EME/Widevine playback goes
+      # through -- the same packages declared in tauri.conf.json's
+      # bundle.linux.deb/rpm "depends" for the *installed* app, but the
+      # build machine also needs the matching "-dev" headers to compile
+      # against at all, which end users installing the .deb/.rpm do not.
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/archives/partial"
           sudo apt-get install -y \
-            -o Dir::Cache::archives="$GITHUB_WORKSPACE/.apt-cache/archives" \
-            build-essential \
-            curl \
-            file \
-            libssl-dev \
             libwebkit2gtk-4.1-dev \
-            libxdo-dev \
+            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            rpm
+            build-essential \
+            curl \
+            wget \
+            file \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly \
+            gstreamer1.0-libav
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install JavaScript dependencies
-        run: npm ci
-
-      - name: Set up Rust
+      # ---------------- toolchains ----------------
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust and Tauri build artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Install Node
+        uses: actions/setup-node@v4
         with:
-          workspaces: src-tauri -> target
-          shared-key: modapp-tauri-release
-          cache-on-failure: true
+          node-version: 20
+          cache: npm
 
-      - name: Build Tauri packages
-        run: npm run tauri:build
+      - name: Install frontend dependencies
+        run: npm ci
 
-      - name: Generate release notes
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: npm run release:notes
+      # Cache Cargo's registry + the src-tauri target dir, keyed on the
+      # lockfile and platform so a dependency bump invalidates it but
+      # nothing else does.
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ matrix.platform }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.platform }}-cargo-
 
-      - name: Publish GitHub release
+      # ---------------- build ----------------
+      # Calling the project's own script directly, rather than relying on
+      # tauri-action's build auto-detection -- that auto-detection assumes
+      # a package.json script literally named "tauri", and this project's
+      # is named "tauri:build" instead.
+      - name: Build
+        run: npm run tauri:build -- ${{ matrix.args }}
+
+      # ---------------- publish ----------------
+      # Only runs on an actual tag push (github.ref_type == 'tag'), so a
+      # manual workflow_dispatch run still builds above but skips creating
+      # a release -- useful for testing this workflow without publishing.
+      #
+      # Bundle output paths are Tauri's own convention under
+      # src-tauri/target/release/bundle/<format>/ -- adjust the glob roots
+      # here if this project's Cargo/Tauri project lives somewhere other
+      # than ./src-tauri.
+      - name: Upload release assets
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: modapp ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          body_path: release-notes.md
+          name: "modapp ${{ github.ref_name }}"
+          draft: true
+          prerelease: false
           files: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
-          fail_on_unmatched_files: true
-          generate_release_notes: false
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

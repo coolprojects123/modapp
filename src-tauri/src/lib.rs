@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl, Window};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Url, WebviewUrl, Window};
 use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_SETTINGS: &str = r##"{
@@ -162,42 +162,84 @@ fn mod_enabled(app: &AppHandle, mod_id: &str) -> Result<bool, String> {
 #[tauri::command]
 fn list_mods(app: AppHandle) -> Result<Vec<Value>, String> {
     let directory = mods_dir(&app)?;
-    let config = read_json(&directory.join(".config.json"), Value::Object(Map::new()));
-    let config = config.as_object().cloned().unwrap_or_default();
+    let config = read_json(
+        &directory.join(".config.json"),
+        Value::Object(Map::new()),
+    );
+
+    let config = config
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+
     let mut mods = Vec::new();
 
-    for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| error.to_string())?
+    {
         let entry = entry.map_err(|error| error.to_string())?;
+
         if !entry.path().is_dir() {
             continue;
         }
-        let id = entry.file_name().to_string_lossy().to_string();
+
+        let id = entry.file_name()
+            .to_string_lossy()
+            .to_string();
+
         let manifest_path = entry.path().join("mod.json");
+
         if !manifest_path.exists() {
             continue;
         }
-        let mut manifest = read_json(&manifest_path, Value::Null);
+
+        let mut manifest =
+            read_json(&manifest_path, Value::Null);
+
         let Some(object) = manifest.as_object_mut() else {
             continue;
         };
+
         let core = id == "core";
+
         let enabled = if core {
             true
         } else {
-            config.get(&id).and_then(Value::as_bool).unwrap_or_else(|| {
-                object
-                    .get("enabledByDefault")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true)
-            })
+            config
+                .get(&id)
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| {
+                    object
+                        .get("enabledByDefault")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true)
+                })
         };
-        object.insert("id".into(), Value::String(id.clone()));
-        object.insert("core".into(), Value::Bool(core));
-        object.insert("enabled".into(), Value::Bool(enabled));
+
+        object.insert(
+            "id".into(),
+            Value::String(id.clone()),
+        );
+
+        object.insert(
+            "core".into(),
+            Value::Bool(core),
+        );
+
+        object.insert(
+            "enabled".into(),
+            Value::Bool(enabled),
+        );
+
         object.insert(
             "assetBase".into(),
-            Value::String(entry.path().to_string_lossy().to_string()),
+            Value::String(
+                entry.path()
+                    .to_string_lossy()
+                    .to_string()
+            ),
         );
+
         mods.push(manifest);
     }
 
@@ -388,24 +430,46 @@ fn build_lua_env(
 
         // ---- mods.toggle: flips a mod's enabled state in .config.json ----
         if permissions.contains("mods.toggle") {
-            let directory = mods_dir(app)?;
             let app_handle = app.clone();
+
             let f = lua
                 .create_function(move |_, id: String| {
                     if id == "core" {
                         return Ok(true);
                     }
-                    let current = mod_enabled(&app_handle, &id).map_err(mlua::Error::external)?;
-                    let config_path = directory.join(".config.json");
-                    let mut config = read_json(&config_path, Value::Object(Map::new()));
-                    config
+
+                    let current =
+                        mod_enabled(&app_handle, &id)
+                            .map_err(mlua::Error::external)?;
+
+                    let config_path =
+                        mods_dir(&app_handle)
+                            .map_err(mlua::Error::external)?
+                            .join(".config.json");
+
+                    let mut config =
+                        read_json(&config_path, Value::Object(Map::new()));
+
+                    let object = config
                         .as_object_mut()
-                        .unwrap()
-                        .insert(id, Value::Bool(!current));
-                    write_json(&config_path, &config).map_err(mlua::Error::external)?;
+                        .ok_or_else(|| {
+                            mlua::Error::external(
+                                "mod configuration must be a JSON object"
+                            )
+                        })?;
+
+                    object.insert(
+                        id,
+                        Value::Bool(!current),
+                    );
+
+                    write_json(&config_path, &config)
+                        .map_err(mlua::Error::external)?;
+
                     Ok(!current)
                 })
                 .map_err(|error| error.to_string())?;
+
             globals
                 .set("mods_toggle", f)
                 .map_err(|error| error.to_string())?;
@@ -480,45 +544,22 @@ fn platform_user_agent() -> &'static str {
     }
 }
 
-/// Converts a rect the frontend gave us in *logical* coordinates relative
-/// to the viewport element into an *absolute screen* physical rect -- what
-/// a separate WebviewWindow's position/size actually need, since (unlike
-/// the old add_child child webview) it's no longer positioned relative to
-/// a parent's client area.
-fn to_screen_rect(
-    window: &Window,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-) -> Result<(PhysicalPosition<i32>, PhysicalSize<u32>), String> {
-    let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    // inner_position() -- NOT outer_position() -- since the frontend's
-    // getBoundingClientRect() coordinates are relative to the window's
-    // content area only. outer_position() includes the OS title bar/
-    // window chrome, which would shift everything up/left by that many
-    // pixels -- exactly what caused the mod webview to sit too high and
-    // cover the toolbar above it.
-    let parent_pos = window.inner_position().map_err(|error| error.to_string())?;
-    let physical = LogicalPosition::new(x, y).to_physical::<i32>(scale);
-    let size = LogicalSize::new(width, height).to_physical::<u32>(scale);
-    Ok((
-        PhysicalPosition::new(parent_pos.x + physical.x, parent_pos.y + physical.y),
-        size,
-    ))
-}
-
-// REDESIGNED (previously implemented via Window::add_child, which on
-// Windows has a documented history of real bugs across Tauri/wry versions:
-// child-webview z-order landing behind the parent, blank rendering, and
-// deadlocks when add_child is called synchronously). This uses a separate,
-// parented WebviewWindow instead -- the ordinary top-level window creation
-// path, which doesn't share add_child's child-webview-specific bugs.
-// Borderless + no taskbar entry + position/size synced to the tab's
-// on-screen rect makes it look embedded even though it's architecturally a
-// normal window. Trade-off: unlike a true child webview, it does NOT
-// automatically follow the main window when dragged/resized -- see
-// wire_mod_webview_tracking below, called once from setup().
+// True embedded child webview via Window::add_child. This positions
+// relative to the PARENT WINDOW'S OWN CLIENT AREA (unlike a separate
+// WebviewWindow, which needs absolute screen coordinates) -- so the
+// frontend's viewport rect (already relative to the page, which fills the
+// window) can be used directly, no parent-offset math needed. This also
+// means it automatically tracks the parent window on move/resize with no
+// extra event wiring (contrast with wire_mod_webview_tracking, previously
+// needed only because the separate-top-level-window approach did NOT
+// track automatically).
+//
+// NOTE: reintroduced after initially moving away from add_child due to a
+// documented history of real bugs on Windows in some Tauri/wry versions
+// (z-order landing behind the parent, blank rendering, deadlocks when
+// called synchronously off the main thread). If any of those resurface,
+// the separate-WebviewWindow approach (see git history / previous
+// revision of this function) is the fallback.
 #[tauri::command]
 async fn create_mod_webview(
     app: AppHandle,
@@ -537,58 +578,43 @@ async fn create_mod_webview(
     }
 
     let label = mod_webview_label(&mod_id, &instance);
-    if app.get_webview_window(&label).is_some() {
+    if app.get_webview(&label).is_some() {
         return Err(format!("webview '{label}' already exists — close it first"));
     }
 
     let parsed_url = Url::parse(&url).map_err(|error| error.to_string())?;
-    let (screen_pos, screen_size) = to_screen_rect(&window, x, y, width, height)?;
 
-    // Window creation must happen on the main thread -- same reasoning as
-    // the old add_child fix, this just applies it to the new API instead.
-    let (result_tx, result_rx) = std::sync::mpsc::channel();
-    let app_for_main_thread = app.clone();
+    // add_child must run on the main thread. Same non-blocking oneshot
+    // handoff as before -- see the comment on result_rx.await below for
+    // why this can't be a blocking recv().
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let window_for_main_thread = window.clone();
     window
         .run_on_main_thread(move || {
-            // .parent() takes a &WebviewWindow, not the raw Window type --
-            // confirmed against a real tauri-plugin-window-system usage
-            // example, since Tauri's own docs don't show this signature
-            // directly. "main" is this app's main window label per
-            // tauri.conf.json (unlabeled window entries default to
-            // "main") -- verify this if that config ever changes.
-            let outcome = app_for_main_thread
-                .get_webview_window("main")
-                .ok_or_else(|| "main window not found".to_string())
-                .and_then(|main_window| {
-                    tauri::WebviewWindowBuilder::new(
-                        &app_for_main_thread,
-                        &label,
-                        WebviewUrl::External(parsed_url),
-                    )
-                    .user_agent(platform_user_agent())
-                    .parent(&main_window)
-                    .map_err(|error| error.to_string())
-                })
-                .and_then(|builder| {
-                    builder
-                        .decorations(false)
-                        .skip_taskbar(true)
-                        .position(screen_pos.x as f64, screen_pos.y as f64)
-                        .inner_size(screen_size.width as f64, screen_size.height as f64)
-                        .visible(true)
-                        .build()
-                        .map_err(|error| error.to_string())
-                })
-                .map(|_webview_window| ());
+            let builder = tauri::webview::WebviewBuilder::new(
+                &label,
+                WebviewUrl::External(parsed_url),
+            )
+            .user_agent(platform_user_agent());
+            let outcome = window_for_main_thread
+                .add_child(
+                    builder,
+                    LogicalPosition::new(x, y),
+                    LogicalSize::new(width, height),
+                )
+                .map(|_webview| ())
+                .map_err(|error| error.to_string());
             let _ = result_tx.send(outcome);
         })
         .map_err(|error| error.to_string())?;
-    // NOTE: this blocks the current async task's thread on a plain
-    // std::sync::mpsc::recv() until the main thread finishes creating the
-    // window. Fine for an infrequent, quick action like this; if this ever
-    // becomes a hot path, swap for tokio::sync::oneshot + .await so it
-    // yields the thread instead of blocking it.
-    result_rx.recv().map_err(|error| error.to_string())??;
+    // Non-blocking: yields this task's thread instead of parking it, so
+    // if this command happens to be running on the main thread itself,
+    // the run_on_main_thread closure queued above still gets a chance to
+    // execute before we resume. Blocking here (e.g. std::sync::mpsc::recv)
+    // would self-deadlock in that case.
+    result_rx
+        .await
+        .map_err(|error| error.to_string())??;
 
     Ok(())
 }
@@ -597,8 +623,8 @@ async fn create_mod_webview(
 fn close_mod_webview(app: AppHandle, mod_id: String, instance: String) -> Result<(), String> {
     require_fs_permission(&app, &mod_id, "webview.access")?;
     let label = mod_webview_label(&mod_id, &instance);
-    if let Some(webview_window) = app.get_webview_window(&label) {
-        webview_window.close().map_err(|error| error.to_string())?;
+    if let Some(webview) = app.get_webview(&label) {
+        webview.close().map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -612,13 +638,13 @@ fn set_mod_webview_visible(
 ) -> Result<(), String> {
     require_fs_permission(&app, &mod_id, "webview.access")?;
     let label = mod_webview_label(&mod_id, &instance);
-    let Some(webview_window) = app.get_webview_window(&label) else {
+    let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
     if visible {
-        webview_window.show()
+        webview.show()
     } else {
-        webview_window.hide()
+        webview.hide()
     }
     .map_err(|error| error.to_string())
 }
@@ -626,7 +652,6 @@ fn set_mod_webview_visible(
 #[tauri::command]
 fn set_mod_webview_bounds(
     app: AppHandle,
-    window: Window,
     mod_id: String,
     instance: String,
     x: f64,
@@ -636,36 +661,19 @@ fn set_mod_webview_bounds(
 ) -> Result<(), String> {
     require_fs_permission(&app, &mod_id, "webview.access")?;
     let label = mod_webview_label(&mod_id, &instance);
-    let Some(webview_window) = app.get_webview_window(&label) else {
+    let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
-    let (screen_pos, screen_size) = to_screen_rect(&window, x, y, width, height)?;
-    webview_window
-        .set_position(screen_pos)
+    // A child webview's position/size, like add_child's own arguments, are
+    // relative to the parent window's client area -- no parent-offset math
+    // needed here, unlike the old separate-top-level-window version.
+    webview
+        .set_position(LogicalPosition::new(x, y))
         .map_err(|error| error.to_string())?;
-    webview_window
-        .set_size(screen_size)
+    webview
+        .set_size(LogicalSize::new(width, height))
         .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-// NEW: since the mod webview is now a separate top-level window rather
-// than a true child webview, it does NOT automatically follow the main
-// window when dragged or resized. Call this once from setup(), after the
-// main window exists, to re-notify the frontend whenever that happens so
-// it can resend each visible mod webview's current logical bounds (the
-// frontend remains the source of truth for layout/CSS, so this doesn't
-// duplicate that state on the Rust side).
-fn wire_mod_webview_tracking(app: &AppHandle, main_window: &tauri::WebviewWindow) {
-    let app_for_event = app.clone();
-    main_window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-        ) {
-            let _ = app_for_event.emit("mod-webview:reposition-needed", ());
-        }
-    });
 }
 
 #[tauri::command]
@@ -786,9 +794,6 @@ pub fn run() {
             };
             if bundled.exists() {
                 copy_dir(&bundled, &target).map_err(std::io::Error::other)?;
-            }
-            if let Some(main_window) = app.get_webview_window("main") {
-                wire_mod_webview_tracking(&app.handle().clone(), &main_window);
             }
             Ok(())
         })

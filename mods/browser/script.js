@@ -1,54 +1,3 @@
-/**
- * Browser mod — embeds a real native OS webview inside a tab, instead of an
- * <iframe>. This sidesteps X-Frame-Options / CSP framing restrictions that
- * would block most real sites in an iframe.
- *
- * How it works:
- * - All webview lifecycle (create/close/show/hide/position/size) goes
- *   through ModAPI.native.webview, which is backed by permission-gated Rust
- *   commands (see lib.rs) rather than this mod touching Tauri's own webview
- *   API directly. That's what makes 'webview.access' in this mod's mod.json
- *   meaningful — a mod without that permission simply can't create one.
- *   UA selection (matched to the real host engine, not hardcoded) also lives
- *   entirely on the Rust side now, so it's consistent for every mod that
- *   uses this, not just this one.
- * - The mod webview is a separate, parented native window (not a true child
- *   webview) — see lib.rs for why. Because of that, it does NOT
- *   automatically follow the main app window when it's dragged or resized.
- *   lib.rs emits a 'mod-webview:reposition-needed' event whenever the main
- *   window moves/resizes; this mod listens for that and recomputes/resends
- *   its bounds in response, which is what keeps the webview glued to the
- *   toolbar/viewport visually even though it's a separate OS window under
- *   the hood.
- * - There is no JS-side "navigate" API for an existing webview in Tauri 2 at
- *   the time this was written, so every navigation (address bar, back,
- *   forward, reload) closes the old native webview and creates a new one at
- *   the same position/size with the new URL. This means in-page state
- *   (scroll position, unsaved form input, JS state) is not preserved across
- *   navigations — only the browsing history (as a list of URLs) is tracked
- *   by this mod itself.
- * - The native webview floats above the DOM at fixed screen coordinates, so
- *   this mod repositions/resizes it on window resize and hides/shows it in
- *   sync with this tab's own visibility (tracked via a MutationObserver on
- *   the tab container's inline `style.display`, which is how site.js now
- *   toggles active tabs — the `hidden` attribute is no longer used for this).
- *
- * QOL additions:
- * - Last URL + history persisted to localStorage, restored on next launch
- *   instead of always reopening to HOME_URL.
- * - A thin animated progress bar under the toolbar during navigation,
- *   instead of only a text status line.
- * - Toolbar controls (back/forward/reload/home/url/go) are disabled while a
- *   navigation is in flight, since each navigation destroys and recreates
- *   the native webview — clicking again mid-navigation could otherwise
- *   race destroyWebview()/create() against each other.
- * - Escape in the URL bar reverts the input to the current page's URL
- *   (without navigating) and blurs it, instead of leaving stray edits.
- * - Clicking into the URL bar selects its full contents, like a normal
- *   browser address bar, so retyping doesn't require manually clearing it.
- * - reposition() calls are debounced -- window drag/resize can otherwise
- *   fire many times per second, each one an IPC round-trip.
- */
 (function () {
   // Captured now, at load time, while bootstrap.js still has ModAPI's modId
   // set to this mod's own id — by the time registerTab's render() runs
@@ -90,6 +39,13 @@
   let historyIndex = restored ? restored.index : -1;
   let isLoading = false;
   let repositionTimer = null;
+  // A native webview is a separate OS-composited surface -- it paints on
+  // top of regular DOM content (including a translucent overlay modal like
+  // Settings) no matter what z-index says, so there's no CSS fix for that.
+  // site.js tells every mod when an overlay widget opens/closes; hiding
+  // ours for the duration is what keeps Settings/Login from having this
+  // tab's page show through or on top of them.
+  let overlayOpen = false;
 
   let viewportEl = null;
   let urlInput = null;
@@ -148,22 +104,6 @@
     }, REPOSITION_DEBOUNCE_MS);
   }
 
-  // The mod webview is a separate native window now (see lib.rs), so it
-  // won't drag/resize along with the main window on its own — lib.rs emits
-  // this event whenever the main window moves or resizes, and this is what
-  // actually keeps the browser webview glued in place in response.
-  if (window.__TAURI__?.event?.listen) {
-    window.__TAURI__.event.listen('mod-webview:reposition-needed', () => {
-      reposition();
-    });
-  } else {
-    console.warn(
-      '[browser mod] window.__TAURI__.event is not available — the browser ' +
-      'webview will not follow the app window when it is moved or resized. ' +
-      'Make sure "withGlobalTauri" is enabled in tauri.conf.json.'
-    );
-  }
-
   function normalizeInput(raw) {
     const value = raw.trim();
     if (!value) return HOME_URL;
@@ -185,6 +125,13 @@
     if (goBtn) goBtn.disabled = loading;
     if (urlInput) urlInput.disabled = loading;
     updateNavButtons();
+  }
+
+  // Single visibility source of truth, combining the tab's own DOM
+  // visibility with whether an overlay widget currently needs this
+  // webview hidden out of the way.
+  function shouldBeVisible(container) {
+    return isVisible(container) && !overlayOpen;
   }
 
   async function openUrl(rawUrl, { recordHistory = true } = {}) {
@@ -315,11 +262,11 @@
       }
 
       const resizeObserver = new ResizeObserver(() => {
-        if (isVisible(container)) reposition();
+        if (shouldBeVisible(container)) reposition();
       });
       resizeObserver.observe(viewportEl);
       window.addEventListener('resize', () => {
-        if (isVisible(container)) reposition();
+        if (shouldBeVisible(container)) reposition();
       });
 
       // The tab view is created once and then just toggled via inline
@@ -327,7 +274,7 @@
       // observer is what lets us show/hide the native webview (which floats
       // independent of the DOM) in sync with that.
       const visibilityObserver = new MutationObserver(() => {
-        if (!isVisible(container)) {
+        if (!shouldBeVisible(container)) {
           if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, false).catch(() => {});
         } else {
           reposition();
@@ -335,6 +282,22 @@
         }
       });
       visibilityObserver.observe(container, { attributes: true, attributeFilter: ['style'] });
+
+      // site.js dispatches these around any overlay widget (Settings,
+      // Login) opening/closing. Since a native webview always composites
+      // above regular DOM content regardless of z-index, hiding is the
+      // only way to keep it from covering a transparent overlay panel.
+      document.addEventListener('mods:overlay-opened', () => {
+        overlayOpen = true;
+        if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, false).catch(() => {});
+      });
+      document.addEventListener('mods:overlay-closed', () => {
+        overlayOpen = false;
+        if (shouldBeVisible(container)) {
+          reposition();
+          if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, true).catch(() => {});
+        }
+      });
 
       updateNavButtons();
       openUrl(currentUrl, { recordHistory: navHistory.length === 0 });

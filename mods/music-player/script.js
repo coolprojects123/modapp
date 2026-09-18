@@ -1,5 +1,12 @@
 // Music Player Mod - Upload and play audio/video files with ID3 tag support
 
+// Captured now, at load time -- by the time registerTab's render() runs
+// later (on tab click), bootstrap.js has moved on and ModAPI.modId no
+// longer reflects this mod. Needed for the streaming tab's native webview
+// calls (see mountStreamingView below), which are permission-gated per
+// mod_id the same way the browser mod's are.
+const MOD_ID = window.ModAPI.modId;
+
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
@@ -512,81 +519,161 @@ const MP4TagParser = {
   },
 };
 
-// ── Streaming service URL parser ──────────────────────────────────────
-// Accepts direct service URLs, already-embed URLs, and raw <iframe> HTML
-// snippets (Amazon Music doesn't expose a derivable embed URL, so it needs
-// the snippet pasted in directly).
-function parseStreamingUrl(raw) {
-  raw = raw.trim();
-
-  if (raw.startsWith('<')) {
-    const match = raw.match(/\bsrc=["']([^"']+)["']/i);
-    if (match) raw = match[1];
-    else return null;
-  }
-
-  try {
-    const u = new URL(raw);
-    const host = u.hostname.replace('www.', '');
-
-    if (host === 'open.spotify.com') {
-      if (u.pathname.startsWith('/embed')) return { service: 'spotify', embed: raw };
-      return { service: 'spotify', embed: `https://open.spotify.com/embed${u.pathname}?utm_source=generator&theme=1` };
-    }
-
-    if (host === 'music.apple.com' || host === 'embed.music.apple.com') {
-      if (host === 'embed.music.apple.com') return { service: 'apple', embed: raw };
-      return { service: 'apple', embed: `https://embed.music.apple.com${u.pathname}${u.search}` };
-    }
-
-    if (host === 'music.youtube.com' || host === 'youtube.com' || host === 'youtu.be') {
-      if (u.pathname.startsWith('/embed/')) return { service: 'youtube', embed: raw };
-      let videoId = host === 'youtu.be' ? u.pathname.slice(1) : (u.searchParams.get('v') || u.pathname.split('/').pop());
-      if (videoId) return { service: 'youtube', embed: `https://www.youtube.com/embed/${videoId}?autoplay=0` };
-    }
-
-    if (host === 'music.amazon.com') {
-      if (u.pathname.startsWith('/embed/')) return { service: 'amazon', embed: raw };
-      return { service: 'amazon', needsEmbedCode: true };
-    }
-  } catch {}
-  return null;
-}
-
+// ── Streaming: native-webview-backed service tabs ──────────────────────
+// Previously this rendered an <iframe> pointed at each service's special
+// "/embed" URL, since a normal page load would hit X-Frame-Options and
+// refuse to display. A native webview (same mechanism the browser mod
+// uses -- ModAPI.native.webview, backed by lib.rs's permission-gated
+// commands) isn't subject to iframe framing restrictions at all, so this
+// can load the REAL site instead of a stripped-down single-track widget:
+// full browsing, search, and a logged-in session, not just whatever one
+// link was pasted in.
+//
+// Trade-off, same one the browser mod's own docs call out: there's no
+// JS-side "navigate" API for an existing webview in Tauri 2, so entering
+// a new address destroys the old native webview and creates a new one at
+// the same position/size -- in-page state doesn't survive that, only the
+// last-loaded URL (persisted below) does.
 const STREAMING_SERVICES = [
   { id: 'spotify', label: 'Spotify', color: '#1DB954', icon: 'headphones',
-    placeholder: 'Paste a Spotify track, album, or playlist URL\u2026',
-    hint: 'open.spotify.com/track/\u2026  \u00b7  /album/\u2026  \u00b7  /playlist/\u2026' },
+    homeUrl: 'https://open.spotify.com', hosts: ['open.spotify.com'],
+    placeholder: 'Paste a Spotify link, or leave blank for the homepage\u2026' },
   { id: 'apple', label: 'Apple Music', color: '#FC3C44', icon: 'music_note',
-    placeholder: 'Paste an Apple Music song, album, or playlist URL\u2026',
-    hint: 'music.apple.com/us/album/\u2026  \u00b7  /playlist/\u2026' },
+    homeUrl: 'https://music.apple.com', hosts: ['music.apple.com'],
+    placeholder: 'Paste an Apple Music link, or leave blank for the homepage\u2026' },
   { id: 'youtube', label: 'YouTube Music', color: '#FF0000', icon: 'play_circle',
-    placeholder: 'Paste a YouTube or YouTube Music URL\u2026',
-    hint: 'music.youtube.com/watch?v=\u2026  \u00b7  youtu.be/\u2026' },
+    homeUrl: 'https://music.youtube.com', hosts: ['music.youtube.com', 'youtube.com', 'youtu.be'],
+    placeholder: 'Paste a YouTube Music link, or leave blank for the homepage\u2026' },
   { id: 'amazon', label: 'Amazon Music', color: '#00A8E1', icon: 'cloud',
-    placeholder: 'Paste the Amazon Music embed URL or full <iframe> snippet\u2026',
-    hint: 'In Amazon Music: Share \u2192 Embed \u2192 copy the snippet or just the src URL' },
+    homeUrl: 'https://music.amazon.com', hosts: ['music.amazon.com'],
+    placeholder: 'Paste an Amazon Music link, or leave blank for the homepage\u2026' },
 ];
 
+// Validates/normalizes a pasted address against one service's allowed
+// hosts. Unlike the old parseStreamingUrl, there's no embed-URL rewriting
+// to do -- a native webview can just load the address as-is.
+function normalizeStreamingUrl(raw, svc) {
+  const value = raw.trim();
+  if (!value) return svc.homeUrl;
+
+  let url;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`);
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.replace(/^www\./, '');
+  const allowed = svc.hosts.some((h) => host === h || host.endsWith(`.${h}`));
+  return allowed ? url.toString() : null;
+}
+
 function mountStreamingView(container) {
-  container.innerHTML = `
-    <div class="streaming-pills" id="streaming-pills"></div>
-    <div class="streaming-body" id="streaming-body"></div>
-  `;
+  container.innerHTML = `<div class="streaming-pills" id="streaming-pills"></div>`;
 
   const pillsRow = container.querySelector('#streaming-pills');
-  const body = container.querySelector('#streaming-body');
-  const state = {};
-  STREAMING_SERVICES.forEach((s) => { state[s.id] = { url: localStorage.getItem(`streaming_url_${s.id}`) || '' }; });
-  let activeService = localStorage.getItem('streaming_active') || 'spotify';
+  const hasWebviewAPI = !!window.ModAPI?.native?.webview;
+  const INSTANCE = 'streaming';
+  const REPOSITION_DEBOUNCE_MS = 40;
 
-  function renderService(serviceId) {
+  // Only one service webview slot exists at a time -- switching services
+  // destroys the old one and creates a new one under the same instance
+  // name, same as navigating within a single service does.
+  let hasWebview = false;
+  let activeService = localStorage.getItem('streaming_active') || STREAMING_SERVICES[0].id;
+  let currentSvc = null;
+  let embedArea = null;
+  let statusEl = null;
+  let repositionTimer = null;
+  let resizeObserver = null;
+
+  function computeBounds() {
+    if (!embedArea) return null;
+    const rect = embedArea.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return null;
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  }
+
+  async function destroyWebview() {
+    if (!hasWebview) return;
+    hasWebview = false;
+    try {
+      await window.ModAPI.native.webview.close(MOD_ID, INSTANCE);
+    } catch (err) {
+      // Already gone / never fully created -- safe to ignore.
+    }
+  }
+
+  async function doReposition() {
+    if (!hasWebview) return;
+    const bounds = computeBounds();
+    if (!bounds) return;
+    try {
+      await window.ModAPI.native.webview.setBounds(MOD_ID, INSTANCE, bounds);
+    } catch (err) {
+      console.warn('[music-player] failed to reposition streaming webview:', err);
+    }
+  }
+
+  // Coalesces bursts of reposition requests (window drag/resize can fire
+  // many times a second) into a single IPC call.
+  function reposition() {
+    if (repositionTimer) clearTimeout(repositionTimer);
+    repositionTimer = setTimeout(() => {
+      repositionTimer = null;
+      doReposition();
+    }, REPOSITION_DEBOUNCE_MS);
+  }
+
+  // A single visibility source of truth: offsetParent is null whenever
+  // this element or ANY ancestor has display:none, which covers all three
+  // nested toggles this tab can be hidden by (the whole app's own tab
+  // switcher, the Library/Streaming top-tab, and this element itself) in
+  // one check instead of a MutationObserver per layer.
+  function isEmbedVisible() {
+    return !!embedArea && embedArea.offsetParent !== null && !overlayOpen;
+  }
+
+  function setWebviewVisible(visible) {
+    if (!hasWebview) return;
+    window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, visible).catch(() => {});
+  }
+
+  // Called whenever something might have changed this tab's visibility
+  // (top-tab switch, outer app tab switch, an overlay widget opening or
+  // closing) without a full service reload.
+  function syncVisibility() {
+    if (isEmbedVisible()) {
+      reposition();
+      setWebviewVisible(true);
+    } else {
+      setWebviewVisible(false);
+    }
+  }
+
+  // A native webview is a separate OS-composited surface -- it paints on
+  // top of regular DOM content (including a translucent modal like
+  // Settings) no matter what z-index says, so there's no CSS fix. Instead,
+  // site.js tells every mod when an overlay widget opens/closes; hiding
+  // ours for the duration is what keeps Settings/Login from having the
+  // streaming site show through or on top of them.
+  let overlayOpen = false;
+  document.addEventListener('mods:overlay-opened', () => { overlayOpen = true; syncVisibility(); });
+  document.addEventListener('mods:overlay-closed', () => { overlayOpen = false; syncVisibility(); });
+
+  async function loadService(serviceId, urlOverride) {
+    const svc = STREAMING_SERVICES.find((s) => s.id === serviceId);
+    currentSvc = svc;
     activeService = serviceId;
     localStorage.setItem('streaming_active', serviceId);
 
     pillsRow.querySelectorAll('.streaming-pill').forEach((btn) => {
-      const svc = STREAMING_SERVICES.find((s) => s.id === btn.dataset.svc);
-      const active = svc.id === serviceId;
+      const active = btn.dataset.svc === serviceId;
       btn.classList.toggle('active', active);
       btn.style.background = active ? svc.color : '';
       btn.style.borderColor = active ? svc.color : '';
@@ -594,66 +681,88 @@ function mountStreamingView(container) {
       if (icon) icon.style.color = active ? '#fff' : svc.color;
     });
 
-    const svc = STREAMING_SERVICES.find((s) => s.id === serviceId);
-    const cur = state[serviceId];
+    if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+    await destroyWebview();
 
-    body.innerHTML = `
-      <div class="streaming-input-row">
-        <input type="text" class="streaming-input" id="streaming-input" placeholder="${escapeHtml(svc.placeholder)}" value="${escapeHtml(cur.url)}">
-        <button class="streaming-load-btn" id="streaming-load-btn" style="background:${svc.color}">
-          <span class="material-symbols-outlined" style="font-size:16px;color:#fff;">play_arrow</span>Load
-        </button>
-      </div>
-      <div class="streaming-hint">${escapeHtml(svc.hint)}</div>
-      <div class="streaming-embed-area" id="streaming-embed-area"></div>
-    `;
-
-    const input = body.querySelector('#streaming-input');
-    const loadBtn = body.querySelector('#streaming-load-btn');
-    const embedArea = body.querySelector('#streaming-embed-area');
-
-    function showPlaceholder(message, isError) {
-      embedArea.innerHTML = `
-        <div class="streaming-placeholder">
-          <span class="material-symbols-outlined" style="font-size:44px;color:${isError ? 'var(--danger)' : svc.color}">${isError ? 'error_outline' : svc.icon}</span>
-          <div>${escapeHtml(message || `Paste a ${svc.label} URL above to get started`)}</div>
+    const bodyId = `streaming-body-${serviceId}`;
+    let body = container.querySelector(`#${bodyId}`);
+    if (!body) {
+      // Replace, not append -- only the active service's body should
+      // exist at a time, mirroring the single-webview-slot model above.
+      container.querySelectorAll('.streaming-body').forEach((el) => el.remove());
+      body = document.createElement('div');
+      body.id = bodyId;
+      body.className = 'streaming-body';
+      body.innerHTML = `
+        <div class="streaming-input-row">
+          <input type="text" class="streaming-input" id="streaming-input" placeholder="${escapeHtml(svc.placeholder)}">
+          <button class="streaming-load-btn" id="streaming-load-btn" style="background:${svc.color}">
+            <span class="material-symbols-outlined" style="font-size:16px;color:#fff;">arrow_forward</span>Go
+          </button>
         </div>
+        <div class="streaming-embed-area" id="streaming-embed-area"></div>
       `;
+      container.appendChild(body);
+
+      const input = body.querySelector('#streaming-input');
+      const loadBtn = body.querySelector('#streaming-load-btn');
+      loadBtn.addEventListener('click', () => navigate(input.value));
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') navigate(input.value); });
     }
 
-    function showNeedsEmbedCode() {
-      embedArea.innerHTML = `
-        <div class="streaming-placeholder">
-          <span class="material-symbols-outlined" style="font-size:36px;color:${svc.color}">info</span>
-          <div style="font-weight:600;">Paste the Amazon Music embed snippet</div>
-          <ol class="streaming-steps">
-            <li>Open the song, album, or playlist in Amazon Music</li>
-            <li>Click the \u22ef menu \u2192 Share \u2192 Embed</li>
-            <li>Copy the snippet and paste it in the box above</li>
-          </ol>
-        </div>
-      `;
+    embedArea = body.querySelector('#streaming-embed-area');
+    statusEl = null;
+
+    if (!hasWebviewAPI) {
+      embedArea.innerHTML =
+        '<div class="streaming-placeholder"><span class="material-symbols-outlined" ' +
+        `style="font-size:44px;color:var(--danger)">error_outline</span><div>Native webview API ` +
+        'is not available. Make sure this mod has the <code>webview.access</code> permission and ' +
+        'you\'re running the desktop (Tauri) build.</div></div>';
+      return;
     }
 
-    function loadUrl(url) {
-      if (!url.trim()) { showPlaceholder(); return; }
-      const parsed = parseStreamingUrl(url);
-      if (!parsed) { showPlaceholder(`Couldn't recognise that URL \u2014 try a direct link from ${svc.label}`, true); return; }
-      if (parsed.service !== serviceId) { showPlaceholder(`That looks like a ${parsed.service} link, not ${svc.label}`, true); return; }
-      if (parsed.needsEmbedCode) { showNeedsEmbedCode(); return; }
+    const savedUrl = localStorage.getItem(`streaming_url_${serviceId}`) || '';
+    const target = urlOverride || savedUrl || svc.homeUrl;
+    await navigate(target, { skipValidationFor: svc.homeUrl });
 
-      embedArea.innerHTML = `<iframe class="streaming-iframe" src="${parsed.embed}" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
+    resizeObserver = new ResizeObserver(() => { if (isEmbedVisible()) reposition(); });
+    resizeObserver.observe(embedArea);
+  }
+
+  async function navigate(rawUrl, { skipValidationFor } = {}) {
+    const svc = currentSvc;
+    const normalized = rawUrl === skipValidationFor ? rawUrl : normalizeStreamingUrl(rawUrl, svc);
+    if (!normalized) {
+      embedArea.innerHTML =
+        `<div class="streaming-placeholder"><span class="material-symbols-outlined" ` +
+        `style="font-size:44px;color:var(--danger)">error_outline</span><div>That doesn't look ` +
+        `like a ${escapeHtml(svc.label)} link.</div></div>`;
+      return;
     }
 
-    if (cur.url) loadUrl(cur.url); else showPlaceholder();
+    const input = container.querySelector('#streaming-input');
+    if (input) input.value = normalized === svc.homeUrl ? '' : normalized;
+    localStorage.setItem(`streaming_url_${svc.id}`, normalized === svc.homeUrl ? '' : normalized);
 
-    loadBtn.addEventListener('click', () => {
-      const url = input.value.trim();
-      state[serviceId].url = url;
-      localStorage.setItem(`streaming_url_${serviceId}`, url);
-      loadUrl(url);
-    });
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadBtn.click(); });
+    const bounds = computeBounds() || { x: 0, y: 0, width: 800, height: 600 };
+    await destroyWebview();
+
+    try {
+      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: normalized, ...bounds });
+      hasWebview = true;
+      // Bounds above may have been the 0x0 fallback if this tab was still
+      // hidden during the initial call -- force a fresh measurement now
+      // that hasWebview is set and the tab should actually be visible.
+      await doReposition();
+      setWebviewVisible(isEmbedVisible());
+    } catch (err) {
+      hasWebview = false;
+      embedArea.innerHTML =
+        `<div class="streaming-placeholder"><span class="material-symbols-outlined" ` +
+        `style="font-size:44px;color:var(--danger)">error_outline</span><div>Failed to load: ` +
+        `${escapeHtml(err.message || String(err))}</div></div>`;
+    }
   }
 
   STREAMING_SERVICES.forEach((svc) => {
@@ -661,11 +770,19 @@ function mountStreamingView(container) {
     btn.className = 'streaming-pill';
     btn.dataset.svc = svc.id;
     btn.innerHTML = `<span class="material-symbols-outlined" style="font-size:16px;color:${svc.color}">${svc.icon}</span>${escapeHtml(svc.label)}`;
-    btn.addEventListener('click', () => renderService(svc.id));
+    btn.addEventListener('click', () => { if (svc.id !== activeService) loadService(svc.id); });
     pillsRow.appendChild(btn);
   });
 
-  renderService(activeService);
+  window.addEventListener('resize', () => { if (isEmbedVisible()) reposition(); });
+
+  loadService(activeService);
+
+  // Exposed so the Library/Streaming top-tab switch and the outer app-tab
+  // switch (see renderMusicPlayer below) can tell this view its
+  // visibility may have changed, without it needing its own observers on
+  // ancestors it doesn't own.
+  return { syncVisibility, destroyWebview };
 }
 
 function renderMusicPlayer(container) {
@@ -752,6 +869,7 @@ function renderMusicPlayer(container) {
   let repeatMode = 'none'; // none, one, all
   let currentArtworkUrl = null;
   let streamingMounted = false;
+  let streamingHandle = null;
   let playbackRetrying = false;
 
   async function ensureMediaUrl(file) {
@@ -802,10 +920,21 @@ function renderMusicPlayer(container) {
       streamingView.style.display = view === 'streaming' ? 'flex' : 'none';
       if (view === 'streaming' && !streamingMounted) {
         streamingMounted = true;
-        mountStreamingView(streamingView);
+        streamingHandle = mountStreamingView(streamingView);
+      } else {
+        streamingHandle?.syncVisibility();
       }
     });
   });
+
+  // The native streaming webview floats independent of the DOM, so it
+  // needs to be told explicitly when the WHOLE Music tab (not just the
+  // Library/Streaming toggle above) is hidden by the app's own tab
+  // switcher -- e.g. site.js toggling `container`'s own style.display
+  // when the user switches to a different mod entirely. Same pattern the
+  // browser mod uses for its own webview.
+  new MutationObserver(() => streamingHandle?.syncVisibility())
+    .observe(container, { attributes: true, attributeFilter: ['style'] });
 
   // ---------------- upload ----------------
   async function handleFileUpload(files) {

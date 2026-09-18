@@ -33,6 +33,15 @@
   const openWidgets = new Map();
   const tabViews = new Map();
 
+  // A native mod webview (browser tab, streaming service, etc.) is a
+  // separate OS-composited surface -- it always paints on top of regular
+  // DOM content, including a translucent overlay modal like Settings, no
+  // matter what z-index says. There's no CSS fix for that, so instead we
+  // tell mods when an overlay widget opens/closes and let them hide/show
+  // their own native webview in response. Counted (not boolean) in case
+  // more than one overlay widget is ever open at once.
+  let openOverlayCount = 0;
+
   // ---------------- bare shell ----------------
   const app = document.getElementById('app');
   app.innerHTML = '';
@@ -127,9 +136,33 @@
   function closeWidget(id) {
     const entry = openWidgets.get(id);
     if (!entry) return;
+
     entry.root.remove();
-    if (entry.onKeydown) document.removeEventListener('keydown', entry.onKeydown);
+
+    if (entry.onKeydown) {
+      document.removeEventListener('keydown', entry.onKeydown);
+    }
+
     openWidgets.delete(id);
+
+    // Widget close lifecycle
+    if (typeof entry.onClose === 'function') {
+      try {
+        entry.onClose();
+      } catch (err) {
+        console.error(`[mods] widget "${id}" onClose failed:`, err);
+      }
+    }
+
+    if (entry.overlay) {
+      openOverlayCount--;
+
+      if (openOverlayCount === 0) {
+        document.dispatchEvent(
+          new CustomEvent('mods:overlay-closed')
+        );
+      }
+    }
   }
 
   function toggleWidget(w) {
@@ -203,9 +236,33 @@
 
     const onKeydown = (e) => { if (e.key === 'Escape') close(); };
     if (w.overlay) document.addEventListener('keydown', onKeydown);
-    openWidgets.set(w.id, { root, onKeydown: w.overlay ? onKeydown : null });
+    openWidgets.set(w.id, {
+      root,
+      onKeydown: w.overlay ? onKeydown : null,
+      overlay: w.overlay,
+      onOpen: w.onOpen,
+      onClose: w.onClose
+    });
+
+    if (w.overlay) {
+      openOverlayCount++;
+
+      if (openOverlayCount === 1) {
+        document.dispatchEvent(
+          new CustomEvent('mods:overlay-opened')
+        );
+      }
+    }
 
     w.mount(body, close);
+
+    if (typeof w.onOpen === 'function') {
+      try {
+        w.onOpen();
+      } catch (err) {
+        console.error(`[mods] widget "${w.id}" onOpen failed:`, err);
+      }
+    }
   }
 
   // ---------------- tab activation ----------------

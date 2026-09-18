@@ -28,12 +28,30 @@
   "bundle": {
     "active": true,
     "category": "Utility",
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": ["deb", "rpm"],
     "icon": [
       "icons/icon.png",
       "icons/icon.svg"
     ],
-    "resources": ["../mods", "../mods-config.json"]
+    "resources": ["../mods", "../mods-config.json"],
+    "linux": {
+      "deb": {
+        "depends": [
+          "gstreamer1.0-plugins-bad",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-ugly",
+          "gstreamer1.0-libav"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "gstreamer1-plugins-bad-free",
+          "gstreamer1-plugins-good",
+          "gstreamer1-plugins-ugly-free",
+          "gstreamer1-libav"
+        ]
+      }
+    }
   },
   "plugins": {
     "updater": {

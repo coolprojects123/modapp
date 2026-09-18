@@ -2254,6 +2254,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "tokio",
  "uuid",
  "webkit2gtk",
  "webview2-com",

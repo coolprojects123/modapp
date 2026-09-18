@@ -61,41 +61,15 @@ window.appAPI = {
     return { ...changes };
   },
   
-  /**
-   * Toggle a mod on/off
-   * @param {string} id - Mod ID
-   * @returns {Promise<boolean>} New enabled state
-   */
-  async toggleMod(id) {
-    if (hasNativeMods) {
-      return await ModAPI.native.mods.toggle(id);
-    }
-    
-    // Fallback to old callBackend system
-    if (typeof originalAppAPI.callBackend === 'function') {
-      return await ModAPI.native.callBackend('core', 'toggle_mod', [id]);
-    }
-    
-    // Browser-only mode: can't toggle
-    return false;
-  },
-  
-  /**
-   * List all mods
-   * @returns {Promise<Array>} Array of mod objects
-   */
   async listMods() {
-    if (hasNativeMods) {
-      return await ModAPI.native.mods.list();
-    }
-    
-    // Fallback to old callBackend system
-    if (typeof originalAppAPI.callBackend === 'function') {
-      const mods = await ModAPI.native.callBackend('core', 'list_mods', []);
-      return mods;
-    }
-    
-    // Browser-only mode: return empty array
-    return [];
+    return await window.__TAURI__.core.invoke('list_mods');
+  },
+
+  async toggleMod(id) {
+    return await ModAPI.native.callBackend(
+      'core',
+      'toggle_mod',
+      [id]
+    );
   },
 };

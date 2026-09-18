@@ -34,12 +34,33 @@ async function writeSettings(changes) {
   return updated;
 }
 
-function readMods() {
+async function readMods() {
+  if (window.nativeAPIReady) await window.nativeAPIReady;
+
+  if (window.appAPI?.listMods) {
+    const mods = await window.appAPI.listMods();
+
+    return mods.map((mod) => ({
+      ...mod,
+      core: mod.id === 'core',
+      enabled: mod.id === 'core' ? true : !!mod.enabled,
+    }));
+  }
+
+  // Browser fallback
   const saved = JSON.parse(localStorage.getItem('modapp_mods') || '{}');
+
   return window.MOD_MANIFESTS.map((mod) => ({
     ...mod,
     core: mod.id === 'core',
-    enabled: mod.id === 'core' ? true : (saved[mod.id] !== undefined ? saved[mod.id] : mod.enabledByDefault !== false),
+    enabled:
+      mod.id === 'core'
+        ? true
+        : saved[mod.id] !== undefined
+          ? !!saved[mod.id]
+          : mod.enabled !== undefined
+            ? !!mod.enabled
+            : mod.enabledByDefault !== false,
   }));
 }
 
@@ -125,51 +146,93 @@ async function renderGeneralSection(container) {
   }
 }
 
+let modsChanged = false;
+
 async function renderModsSection(container) {
-  container.innerHTML = '<p class="muted">Loading mods\u2026</p>';
-  const mods = readMods();
+  container.innerHTML = '<p class="muted">Loading mods…</p>';
 
-  if (mods.length === 0) {
-    container.innerHTML = '<div class="settings-section-title">Installed mods</div><p class="muted">No mods installed.</p>';
-    return;
-  }
+  try {
+    const mods = await window.appAPI.listMods();
 
-  const list = document.createElement('div');
-  list.className = 'mod-list';
+    if (!Array.isArray(mods) || mods.length === 0) {
+      container.innerHTML = `
+        <div class="settings-section-title">Mods</div>
+        <p class="muted">No mods found.</p>
+      `;
+      return;
+    }
 
-  for (const mod of mods) {
-    const row = document.createElement('div');
-    row.className = 'mod-row';
-    const action = mod.core
-      ? '<span class="core-badge">Core</span>'
-      : `<button class="toggle ${mod.enabled ? 'on' : 'off'}" data-id="${mod.id}">${mod.enabled ? 'On' : 'Off'}</button>`;
-    row.innerHTML = `
-      <span class="connector" style="background:${colorForId(mod.id)}"></span>
-      <div class="mod-info">
-        <div class="mod-name">${escapeHtml(mod.name || mod.id)}</div>
-        <div class="mod-desc">${escapeHtml(mod.description || '')}</div>
+    container.innerHTML = `
+      <div class="settings-section-title">Mods</div>
+
+      <div class="mod-list">
+        ${mods.map((mod) => `
+          <div class="mod-row">
+            <span
+              class="connector"
+              style="background:${colorForId(mod.id)}"
+            ></span>
+
+            <div class="mod-info">
+              <div class="mod-name">
+                ${escapeHtml(mod.name || mod.id)}
+              </div>
+
+              <div class="mod-desc">
+                ${escapeHtml(mod.description || '')}
+              </div>
+            </div>
+
+            ${
+              mod.core
+                ? '<span class="core-badge">Core</span>'
+                : `
+                  <button
+                    class="toggle ${mod.enabled ? 'on' : ''}"
+                    data-mod-id="${escapeHtml(mod.id)}"
+                    type="button"
+                  >
+                    ${mod.enabled ? 'On' : 'Off'}
+                  </button>
+                `
+            }
+          </div>
+        `).join('')}
       </div>
-      ${action}
     `;
-    list.appendChild(row);
+
+    container
+      .querySelectorAll('.toggle')
+      .forEach((button) => {
+        button.addEventListener('click', async () => {
+          const modId = button.dataset.modId;
+
+          button.disabled = true;
+
+          try {
+            await window.appAPI.toggleMod(modId);
+
+            modsChanged = true;
+
+            await renderModsSection(container);
+          } catch (error) {
+            console.error(
+              `Failed to toggle mod "${modId}":`,
+              error
+            );
+
+            button.disabled = false;
+          }
+        });
+      });
+  } catch (error) {
+    console.error('Failed to load mods:', error);
+
+    container.innerHTML = `
+      <div class="settings-section-title">Mods</div>
+      <p class="muted">Failed to load mods.</p>
+    `;
   }
-
-  container.innerHTML = '<div class="settings-section-title">Installed mods</div>';
-  container.appendChild(list);
-
-  list.querySelectorAll('.toggle').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      btn.textContent = '\u2026';
-      if (window.appAPI) await window.appAPI.toggleMod(btn.dataset.id);
-      else {
-        const config = JSON.parse(localStorage.getItem('modapp_mods') || '{}');
-        config[btn.dataset.id] = !mod.enabled;
-        localStorage.setItem('modapp_mods', JSON.stringify(config));
-      }
-      location.reload();
-    });
-  });
 }
 
 ModAPI.registerTab({
@@ -186,6 +249,7 @@ ModAPI.registerWidget({
   center: true,
   overlay: true,
   width: '520px',
+
   mount(container) {
     container.classList.add('settings-layout');
     container.innerHTML = `
@@ -200,20 +264,49 @@ ModAPI.registerWidget({
       const item = document.createElement('button');
       item.className = 'settings-nav-item';
       item.dataset.section = section.id;
-      item.appendChild(Icon(section.icon, { size: '17px' }));
+
+      item.appendChild(
+        Icon(section.icon, { size: '17px' })
+      );
+
       const label = document.createElement('span');
       label.textContent = section.label;
       item.appendChild(label);
-      item.addEventListener('click', () => selectSection(section.id));
+
+      item.addEventListener('click', () => {
+        selectSection(section.id);
+      });
+
       sidebar.appendChild(item);
     }
 
     function selectSection(id) {
-      sidebar.querySelectorAll('.settings-nav-item').forEach((el) => el.classList.toggle('active', el.dataset.section === id));
-      SETTINGS_SECTIONS.find((s) => s.id === id).render(content);
+      sidebar
+        .querySelectorAll('.settings-nav-item')
+        .forEach((el) => {
+          el.classList.toggle(
+            'active',
+            el.dataset.section === id
+          );
+        });
+
+      const section = SETTINGS_SECTIONS.find(
+        (s) => s.id === id
+      );
+
+      if (section) {
+        section.render(content);
+      }
     }
 
-    selectSection('general'); // default section
+    selectSection('general');
+  },
+
+  onClose() {
+    if (modsChanged) {
+      modsChanged = false;
+      window.location.reload();
+    }
   },
 });
 
@@ -230,56 +323,3 @@ document.addEventListener('mods:ready', async () => {
 });
 
 function getToken() { return localStorage.getItem('modapp_token'); }
-
-async function renderLoginPanel(container) {
-  const token = getToken();
-
-  if (token) {
-    const data = JSON.parse(token);
-    if (data.username) {
-      container.innerHTML = `
-        <p>Logged in as <strong>${escapeHtml(data.username)}</strong></p>
-        <button class="save-btn" id="logout-btn">Log out</button>
-      `;
-      container.querySelector('#logout-btn').addEventListener('click', () => {
-        localStorage.removeItem('modapp_token');
-        renderLoginPanel(container);
-      });
-      return;
-    }
-    localStorage.removeItem('modapp_token');
-  }
-
-  container.innerHTML = `
-    <form id="login-form" class="settings-form">
-      <label>Username<input type="text" name="username" autocomplete="username"></label>
-      <label>Password<input type="password" name="password" autocomplete="current-password"></label>
-      <button type="submit" class="save-btn">Log in</button>
-      <p class="muted" style="margin-top:8px">Demo credentials: admin / modapp</p>
-      <p class="error" id="login-error" style="display:none">Invalid username or password.</p>
-    </form>
-  `;
-
-  container.querySelector('#login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    if (form.username.value !== 'admin' || form.password.value !== 'modapp') {
-      container.querySelector('#login-error').style.display = 'block';
-      return;
-    }
-    localStorage.setItem('modapp_token', JSON.stringify({ username: form.username.value }));
-    renderLoginPanel(container);
-  });
-}
-
-ModAPI.registerWidget({
-  id: 'login',
-  label: 'Login',
-  icon: 'login',
-  center: true,
-  overlay: true,
-  width: '300px',
-  mount(container) {
-    renderLoginPanel(container);
-  },
-});
