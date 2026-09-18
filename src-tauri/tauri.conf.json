@@ -33,7 +33,7 @@
       "icons/icon.png",
       "icons/icon.svg"
     ],
-    "resources": ["../mods", "../mods-config.json"],
+    "resources": ["../mods"],
     "linux": {
       "deb": {
         "depends": [
