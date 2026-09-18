@@ -21,14 +21,16 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: ""
+            args: "--bundles deb,rpm"
           - platform: windows-latest
-            args: ""
+            args: "--bundles msi,nsis"
 
     runs-on: ${{ matrix.platform }}
 
