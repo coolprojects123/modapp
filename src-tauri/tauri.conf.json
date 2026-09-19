@@ -19,9 +19,38 @@
       }
     ],
     "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' asset: http://asset.localhost https://asset.localhost",
+        "style-src": "'self' asset: http://asset.localhost https://asset.localhost https://fonts.googleapis.com",
+        "style-src-attr": "'unsafe-inline'",
+        "font-src": "'self' data: https://fonts.gstatic.com",
+        "img-src": "'self' data: blob: asset: http://asset.localhost https://asset.localhost https:",
+        "media-src": "'self' blob: asset: http://asset.localhost https://asset.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost asset: http://asset.localhost https://asset.localhost",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "script-src": "'self' asset: http://asset.localhost https://asset.localhost",
+        "style-src": "'self' asset: http://asset.localhost https://asset.localhost https://fonts.googleapis.com",
+        "style-src-attr": "'unsafe-inline'",
+        "font-src": "'self' data: https://fonts.gstatic.com",
+        "img-src": "'self' data: blob: asset: http://asset.localhost https://asset.localhost https:",
+        "media-src": "'self' blob: asset: http://asset.localhost https://asset.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost asset: http://asset.localhost https://asset.localhost ws://127.0.0.1:1430 http://127.0.0.1:1430",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'self'"
+      },
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/mods/**", "$APPDATA/mod-data/**"]
+        "scope": [
+          "$APPDATA/mods/**",
+          "$APPDATA/mod-data/music-player/**"
+        ]
       }
     }
   },
@@ -35,7 +64,9 @@
       "icons/icon.svg",
       "icons/icon.ico"
     ],
-    "resources": ["../mods"],
+    "resources": [
+      "../mods"
+    ],
     "linux": {
       "deb": {
         "depends": [
@@ -58,7 +89,9 @@
   "plugins": {
     "updater": {
       "pubkey": "",
-      "endpoints": []
+      "endpoints": [
+        "https://github.com/coolprojects123/modapp/releases/latest/download/latest.json"
+      ]
     }
   }
 }

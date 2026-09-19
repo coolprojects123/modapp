@@ -178,6 +178,21 @@ const modAPIImpl = (function () {
 // loaded yet) instead of staying live as mods load one by one.
 Object.defineProperties(window.ModAPI, Object.getOwnPropertyDescriptors(modAPIImpl));
 
+// Asset paths in mod.json must stay inside the mod's own folder: no
+// absolute paths, schemes or drive letters, and no ".." segments (also
+// checked after percent-decoding, since URL parsing treats %2e%2e as "..").
+function safeModPath(modId, src) {
+  let decoded = null;
+  try { decoded = typeof src === 'string' ? decodeURIComponent(src) : null; } catch (err) { /* stays null */ }
+  const ok = decoded !== null
+    && decoded.length > 0
+    && !/^[\\/]/.test(decoded)
+    && !/^[a-z][a-z0-9+.-]*:/i.test(decoded)
+    && !decoded.split(/[\\/]/).includes('..');
+  if (!ok) console.warn(`[mods] "${modId}" has an invalid asset path in mod.json: ${JSON.stringify(src)}`);
+  return ok;
+}
+
 async function loadMods() {
   if (window.nativeAPIReady) await window.nativeAPIReady;
 
@@ -197,6 +212,7 @@ async function loadMods() {
 
   for (const mod of mods) {
     for (const src of mod.apis || []) {
+      if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
       try {
@@ -209,6 +225,7 @@ async function loadMods() {
 
   for (const mod of mods) {
     for (const href of mod.styles || []) {
+      if (!safeModPath(mod.id, href)) continue;
       const link = document.createElement('link');
       link.rel = 'stylesheet';
       link.href = mod.assetBase ? `${mod.assetBase}${href}` : `../mods/${mod.id}/${href}`;
@@ -220,6 +237,7 @@ async function loadMods() {
   // Scripts load sequentially so each mod can rely on earlier mods having run.
   for (const mod of mods) {
     for (const src of mod.scripts || []) {
+      if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
       try {

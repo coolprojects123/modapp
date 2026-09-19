@@ -47,3 +47,5 @@ Thumbs.db
 # Docker
 Dockerfile
 
+# Keys
+src-tauri/~/.tauri/modapp.key

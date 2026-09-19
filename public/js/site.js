@@ -289,7 +289,10 @@
         if (override) await override(view);
         else if (modTab) await modTab.render(view);
       } catch (err) {
-        view.innerHTML = `<p class="error">This tab failed to load: ${err.message}</p>`;
+        const failure = document.createElement('p');
+        failure.className = 'error';
+        failure.textContent = `This tab failed to load: ${err.message}`;
+        view.replaceChildren(failure);
       }
 
       const hooks = window.ModAPI._activateHooks.get(id) || [];

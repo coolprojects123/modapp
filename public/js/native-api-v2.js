@@ -9,11 +9,42 @@
  * - Tauri: Uses @tauri-apps/api via injected __TAURI_INVOKE__
  * - Browser: Provides stub implementations that return errors
  * 
- * The API is exposed as ModAPI.native and window.appAPI
+ * The API is exposed as ModAPI.native, window.nativeAPI and window.appAPI
  */
 
 (function() {
   'use strict';
+
+  // Client-side input checks. The Rust side re-validates everything; these
+  // just fail fast with a readable error instead of a round trip.
+  const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+  function assertId(kind, value) {
+    if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
+      throw new Error(`Invalid ${kind}: expected 1-64 letters, digits, '-' or '_'.`);
+    }
+  }
+  function assertWebUrl(url) {
+    let parsed;
+    try { parsed = new URL(url); } catch { throw new Error('Invalid webview URL.'); }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Only http(s) URLs can be opened in a mod webview.');
+    }
+  }
+
+  // Freezes the API surface once it's fully assembled so other scripts can't
+  // swap out callBackend / fs / appAPI for wrappers that intercept calls.
+  // (Defense in depth only: scripts sharing this webview can still reach
+  // window.__TAURI__ directly, so real enforcement lives in the Rust commands.)
+  function lockdown() {
+    const api = window.appAPI;
+    const targets = [fs, settings, mods, shell, updates, nativeAPI, nativeAPI.webview, api, api && api.webview];
+    for (const target of targets) {
+      if (target && typeof target === 'object') Object.freeze(target);
+    }
+    for (const [name, value] of [['appAPI', api], ['nativeAPI', nativeAPI]]) {
+      Object.defineProperty(window, name, { value, writable: false, configurable: false });
+    }
+  }
 
   // ============================================================
   // Filesystem API
@@ -95,12 +126,28 @@
   // ============================================================
   // The Native API object
   // ============================================================
+  // Mod-facing webview API (the shape mods call through ModAPI.native.webview).
+  // Delegates lazily to window.appAPI.webview, which each environment fills
+  // in below, and always returns a promise so callers can .catch() it.
+  const unavailable = () => Promise.reject(new Error('Native APIs are available in the desktop build only.'));
+  const webview = {
+    create: async (modId, instance, { url, x, y, width, height } = {}) =>
+      window.appAPI?.webview ? window.appAPI.webview.create(modId, instance, url, x, y, width, height) : unavailable(),
+    close: async (modId, instance) =>
+      window.appAPI?.webview ? window.appAPI.webview.close(modId, instance) : unavailable(),
+    setVisible: async (modId, instance, visible) =>
+      window.appAPI?.webview ? window.appAPI.webview.setVisible(modId, instance, visible) : unavailable(),
+    setBounds: async (modId, instance, { x, y, width, height } = {}) =>
+      window.appAPI?.webview ? window.appAPI.webview.setBounds(modId, instance, x, y, width, height) : unavailable(),
+  };
+
   const nativeAPI = {
     fs,
     settings,
     mods,
     shell,
     updates,
+    webview,
     
     // Legacy callBackend for backwards compatibility
     // This will be removed in future versions
@@ -135,6 +182,14 @@
     resolveNativeAPI = resolve;
   });
   window.nativeAPIReady = nativeAPIReady;
+
+  // Exposed up front: the Electron and immediate-Tauri paths below return
+  // early, so this can't live at the bottom of the file.
+  window.nativeAPI = nativeAPI;
+  // bootstrap.js picks this up as ModAPI.native. Set here, up front, because
+  // the Electron and immediate-Tauri paths below return early.
+  window.ModAPI = window.ModAPI || {};
+  window.ModAPI.native = nativeAPI;
 
   // ============================================================
   // Detect environment and set up real implementations
@@ -212,6 +267,7 @@
     };
     
     console.log('[native-api-v2] Electron API set up');
+    lockdown();
     resolveNativeAPI(nativeAPI);
     return;
   }
@@ -269,6 +325,13 @@
     nativeAPI.invoke = invokeFn;
     nativeAPI.convertFileSrc = convertFileSrcFn;
     nativeAPI.callBackend = async (modId, functionName, args = []) => {
+      assertId('mod id', modId);
+      if (typeof functionName !== 'string' || !functionName) {
+        throw new Error('Invalid backend function name.');
+      }
+      if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) {
+        throw new Error('Backend args must be an array of strings.');
+      }
       return invokeFn('call_mod_backend', {
         modId,
         function: functionName,
@@ -309,6 +372,7 @@
     
     // FS operations via Tauri
     fs.forMod = (modId) => {
+      assertId('mod id', modId);
       const payload = (extra = {}) => ({ modId, ...extra });
       return {
         ensureDir: (path) => invokeFn('system_ensure_dir', payload({ path })),
@@ -326,23 +390,54 @@
       };
     };
 
+    // Legacy: the shared `fs` object is bound to one mod's data directory.
+    // Prefer fs.forMod(modId); remove this line once callers have migrated.
     Object.assign(fs, fs.forMod('music-player'));
     
     // Set up shell for IDE
-    shell.run = async (command, cwd = '') => {
-      return nativeAPI.callBackend('ide', 'run_command', [command, cwd]);
+    // Per-mod shell access. Runs through the calling mod's OWN backend.lua
+    // (which must define run_command and declare the shell.run permission),
+    // so it can't borrow another mod's permissions. Resolves to
+    // { code, stdout, stderr, timedOut }.
+    shell.forMod = (modId) => {
+      assertId('mod id', modId);
+      return {
+        run: async (command, cwd = '') => {
+          if (typeof command !== 'string' || !command.trim()) {
+            throw new Error('shell.run needs a non-empty command string.');
+          }
+          return nativeAPI.callBackend(modId, 'run_command', [command, String(cwd || '')]);
+        },
+      };
     };
+
+    // Legacy shortcut, kept for older callers: always the ide mod.
+    shell.run = (command, cwd = '') => shell.forMod('ide').run(command, cwd);
     
     // Native embedded webviews — thin wrappers over the Rust commands,
     // which own permission checks (webview.access) and UA/header logic.
-    const webview = {
-      create: (modId, instance, url, x, y, width, height) =>
-        invokeFn('create_mod_webview', { modId, instance, url, x, y, width, height }),
-      close: (modId, instance) => invokeFn('close_mod_webview', { modId, instance }),
-      setVisible: (modId, instance, visible) =>
-        invokeFn('set_mod_webview_visible', { modId, instance, visible }),
-      setBounds: (modId, instance, x, y, width, height) =>
-        invokeFn('set_mod_webview_bounds', { modId, instance, x, y, width, height }),
+    const tauriWebview = {
+      create: async (modId, instance, url, x, y, width, height) => {
+        assertId('mod id', modId);
+        assertId('webview instance', instance);
+        assertWebUrl(url);
+        return invokeFn('create_mod_webview', { modId, instance, url, x, y, width, height });
+      },
+      close: async (modId, instance) => {
+        assertId('mod id', modId);
+        assertId('webview instance', instance);
+        return invokeFn('close_mod_webview', { modId, instance });
+      },
+      setVisible: async (modId, instance, visible) => {
+        assertId('mod id', modId);
+        assertId('webview instance', instance);
+        return invokeFn('set_mod_webview_visible', { modId, instance, visible: !!visible });
+      },
+      setBounds: async (modId, instance, x, y, width, height) => {
+        assertId('mod id', modId);
+        assertId('webview instance', instance);
+        return invokeFn('set_mod_webview_bounds', { modId, instance, x, y, width, height });
+      },
     };
 
     // Set up window.appAPI for backwards compatibility
@@ -354,7 +449,7 @@
       checkForUpdates: updates.check,
       installUpdate: updates.install,
       callBackend: nativeAPI.callBackend,
-      webview: webview,
+      webview: tauriWebview,
       // Expose the new API
       fs: fs,
       settings: settings,
@@ -364,6 +459,7 @@
     };
     
     console.log('[native-api-v2] Tauri API set up successfully');
+    lockdown();
     resolveNativeAPI(nativeAPI);
   }
 
@@ -397,13 +493,8 @@
       shell: shell,
       updates: updates,
     };
+    lockdown();
     resolveNativeAPI(nativeAPI);
   }
 
-  // Expose to ModAPI
-  window.ModAPI = window.ModAPI || {};
-  window.ModAPI.native = nativeAPI;
-  
-  // Also expose to window for direct access
-  window.nativeAPI = nativeAPI;
 })();

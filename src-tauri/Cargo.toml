@@ -2,6 +2,9 @@
 name = "modapp"
 version = "0.1.0"
 edition = "2021"
+description = "A moddable app."
+repository = "https://github.com/coolprojects123/modapp"
+homepage = "https://github.com/coolprojects123/modapp"
 
 [lib]
 name = "modapp_lib"
@@ -11,8 +14,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "devtools", "unstable"] }
+# "devtools" is left out on purpose: debug builds already get the inspector,
+# and enabling the feature would ship it in release builds too. To debug a
+# release build: cargo tauri build --features tauri/devtools
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-updater = "2"
+# Native confirmation dialog shown before an update is installed (Rust-side only;
+# deliberately NOT exposed to JS via a capability).
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

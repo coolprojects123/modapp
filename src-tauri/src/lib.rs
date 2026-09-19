@@ -1,4 +1,4 @@
-// THIS IS THE PRODUCTION BUILD ENTRY POINT. All app logic (commands, run(), setup) lives in lib.rs,
+// All app logic (commands, run(), setup) lives in lib.rs,
 // compiled as the `modapp_lib` library crate -- this split is what lets
 // mobile targets call modapp_lib::run() from their own platform entry point
 // instead of a traditional main().
@@ -6,8 +6,14 @@ use mlua::Lua;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, Url, WebviewUrl, Window};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::UpdaterExt;
 
 const DEFAULT_SETTINGS: &str = r##"{
@@ -32,9 +38,137 @@ fn mods_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Mod ids and webview instance names end up in directory names and webview
+/// labels, and they arrive from JS, so they're restricted to a conservative
+/// charset: no dots, no separators, nothing that can climb out of a folder.
+fn validate_id(kind: &str, value: &str) -> Result<(), String> {
+    let ok = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("invalid {kind}"))
+    }
+}
+
+/// Turns a caller-supplied path into a clean relative path. Only plain names
+/// (and `.`) are accepted -- no `..`, no root, no Windows drive prefixes.
+fn sanitize_relative(path: &str) -> Result<PathBuf, String> {
+    if path.contains('\0') {
+        return Err("invalid path".into());
+    }
+    let mut clean = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => {
+                // ':' in a Windows path component means a drive or an NTFS
+                // alternate data stream.
+                if cfg!(windows) && part.to_string_lossy().contains(':') {
+                    return Err("invalid path".into());
+                }
+                clean.push(part);
+            }
+            Component::CurDir => {}
+            Component::ParentDir => return Err("path traversal is not allowed".into()),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("path must be relative".into())
+            }
+        }
+    }
+    Ok(clean)
+}
+
+/// Rejects targets that resolve outside `base` once symlinks are followed.
+/// Checks the nearest existing ancestor, so it also covers paths that don't
+/// exist yet (about to be created).
+fn ensure_within(base: &Path, target: &Path) -> Result<(), String> {
+    // If the base doesn't exist yet, nothing inside it can be a symlink.
+    let Ok(base) = base.canonicalize() else {
+        return Ok(());
+    };
+    let mut probe = target;
+    loop {
+        match probe.canonicalize() {
+            Ok(resolved) => {
+                return if resolved.starts_with(&base) {
+                    Ok(())
+                } else {
+                    Err("path escapes the mod data directory".into())
+                };
+            }
+            Err(_) => {
+                // Exists but can't be resolved = a dangling symlink, which
+                // a write would happily follow to wherever it points.
+                if probe.symlink_metadata().is_ok() {
+                    return Err("path contains a broken symlink".into());
+                }
+                match probe.parent() {
+                    Some(parent) => probe = parent,
+                    None => return Err("invalid path".into()),
+                }
+            }
+        }
+    }
+}
+
+const MAX_READ_BYTES: u64 = 256 * 1024 * 1024;
+
+fn check_readable_size(path: &Path) -> Result<(), String> {
+    let len = fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if len > MAX_READ_BYTES {
+        return Err(format!("file is too large to read ({len} bytes)"));
+    }
+    Ok(())
+}
+
+/// Per-mod cap on total bytes in its data directory. Raise it if a mod
+/// (e.g. a music library) legitimately needs more.
+const MOD_DATA_QUOTA_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            total += dir_size(&entry.path());
+        } else if let Ok(meta) = entry.metadata() {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+/// Fails if writing `incoming` bytes to `target` would push the mod's data
+/// directory over its quota. An overwritten file's old size is not counted.
+fn check_quota(base: &Path, target: &Path, incoming: u64) -> Result<(), String> {
+    let existing = fs::metadata(target).map(|meta| meta.len()).unwrap_or(0);
+    let used = dir_size(base).saturating_sub(existing);
+    if used.saturating_add(incoming) > MOD_DATA_QUOTA_BYTES {
+        return Err(format!(
+            "mod data quota of {} MiB exceeded",
+            MOD_DATA_QUOTA_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
 /// Per-mod, sandboxed data directory. Lua backends can only ever write here
 /// (via ensure_dir), never to arbitrary paths.
 fn mod_data_dir(app: &AppHandle, mod_id: &str) -> Result<PathBuf, String> {
+    validate_id("mod id", mod_id)?;
     app.path()
         .app_data_dir()
         .map(|dir| dir.join("mod-data").join(mod_id))
@@ -42,37 +176,38 @@ fn mod_data_dir(app: &AppHandle, mod_id: &str) -> Result<PathBuf, String> {
 }
 
 fn system_data_path(app: &AppHandle, mod_id: &str, path: &str) -> Result<PathBuf, String> {
-    if mod_id.is_empty()
-        || mod_id == "."
-        || mod_id == ".."
-        || mod_id.contains('/')
-        || mod_id.contains('\\')
-    {
-        return Err("invalid mod id".into());
-    }
-    if Path::new(path).is_absolute() {
-        return Err("path must be relative".into());
-    }
-    let relative = Path::new(path);
-    if relative
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("path traversal is not allowed".into());
-    }
-    Ok(mod_data_dir(app, mod_id)?.join(relative))
+    let relative = sanitize_relative(path)?;
+    let base = mod_data_dir(app, mod_id)?;
+    let full = base.join(relative);
+    ensure_within(&base, &full)?;
+    Ok(full)
 }
 
-fn require_fs_permission(app: &AppHandle, mod_id: &str, permission: &str) -> Result<(), String> {
+/// Permission check only. Used where a disabled mod must still be able to
+/// clean up after itself (closing / hiding / resizing its webviews).
+fn require_permission_any_state(
+    app: &AppHandle,
+    mod_id: &str,
+    permission: &str,
+) -> Result<(), String> {
     if !mod_permissions(app, mod_id)?.contains(permission) {
         return Err(format!("mod '{mod_id}' lacks permission '{permission}'"));
     }
     Ok(())
 }
 
+/// Permission check plus enabled state: a disabled mod gets no capabilities.
+fn require_permission(app: &AppHandle, mod_id: &str, permission: &str) -> Result<(), String> {
+    require_permission_any_state(app, mod_id, permission)?;
+    if !mod_enabled(app, mod_id)? {
+        return Err(format!("mod '{mod_id}' is disabled"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn system_ensure_dir(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
-    require_fs_permission(&app, &mod_id, "fs.ensure_dir")?;
+    require_permission(&app, &mod_id, "fs.ensure_dir")?;
     let directory = system_data_path(&app, &mod_id, &path)?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     Ok(directory.to_string_lossy().to_string())
@@ -84,9 +219,15 @@ fn copy_dir(source: &Path, target: &Path) -> Result<(), String> {
         let entry = entry.map_err(|error| error.to_string())?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
-        if source_path.is_dir() {
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        // Symlinks are skipped: following them can copy files from outside
+        // the bundle, or recurse forever on a loop.
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             copy_dir(&source_path, &target_path)?;
-        } else {
+        } else if file_type.is_file() {
             fs::copy(source_path, target_path).map_err(|error| error.to_string())?;
         }
     }
@@ -113,6 +254,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// Core's own Lua backend now) takes effect immediately with no in-memory
 /// table to keep in sync.
 fn mod_manifest(app: &AppHandle, mod_id: &str) -> Result<Value, String> {
+    validate_id("mod id", mod_id)?;
     let manifest_path = mods_dir(app)?.join(mod_id).join("mod.json");
     if !manifest_path.exists() {
         return Err(format!("unknown mod: {mod_id}"));
@@ -162,6 +304,7 @@ fn mod_enabled(app: &AppHandle, mod_id: &str) -> Result<bool, String> {
 #[tauri::command]
 fn list_mods(app: AppHandle) -> Result<Vec<Value>, String> {
     let directory = mods_dir(&app)?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let config = read_json(
         &directory.join(".config.json"),
         Value::Object(Map::new()),
@@ -186,6 +329,12 @@ fn list_mods(app: AppHandle) -> Result<Vec<Value>, String> {
         let id = entry.file_name()
             .to_string_lossy()
             .to_string();
+
+        // Folders whose names aren't valid mod ids are never surfaced, so
+        // they can't be loaded or addressed through any command.
+        if validate_id("mod id", &id).is_err() {
+            continue;
+        }
 
         let manifest_path = entry.path().join("mod.json");
 
@@ -248,8 +397,10 @@ fn list_mods(app: AppHandle) -> Result<Vec<Value>, String> {
 
 #[tauri::command]
 fn system_read_file(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
-    require_fs_permission(&app, &mod_id, "fs.read")?;
-    fs::read_to_string(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+    require_permission(&app, &mod_id, "fs.read")?;
+    let file = system_data_path(&app, &mod_id, &path)?;
+    check_readable_size(&file)?;
+    fs::read_to_string(file).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -259,8 +410,9 @@ fn system_write_file(
     path: String,
     content: String,
 ) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "fs.write")?;
+    require_permission(&app, &mod_id, "fs.write")?;
     let file = system_data_path(&app, &mod_id, &path)?;
+    check_quota(&mod_data_dir(&app, &mod_id)?, &file, content.len() as u64)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -269,7 +421,7 @@ fn system_write_file(
 
 #[tauri::command]
 fn system_read_dir(app: AppHandle, mod_id: String, path: String) -> Result<Vec<String>, String> {
-    require_fs_permission(&app, &mod_id, "fs.read_dir")?;
+    require_permission(&app, &mod_id, "fs.read_dir")?;
     let directory = system_data_path(&app, &mod_id, &path)?;
     fs::read_dir(directory)
         .map_err(|error| error.to_string())?
@@ -283,13 +435,13 @@ fn system_read_dir(app: AppHandle, mod_id: String, path: String) -> Result<Vec<S
 
 #[tauri::command]
 fn system_path_exists(app: AppHandle, mod_id: String, path: String) -> Result<bool, String> {
-    require_fs_permission(&app, &mod_id, "fs.read")?;
+    require_permission(&app, &mod_id, "fs.read")?;
     Ok(system_data_path(&app, &mod_id, &path)?.exists())
 }
 
 #[tauri::command]
 fn system_resolve_path(app: AppHandle, mod_id: String, path: String) -> Result<String, String> {
-    require_fs_permission(&app, &mod_id, "fs.read")?;
+    require_permission(&app, &mod_id, "fs.read")?;
     Ok(system_data_path(&app, &mod_id, &path)?
         .to_string_lossy()
         .to_string())
@@ -297,20 +449,22 @@ fn system_resolve_path(app: AppHandle, mod_id: String, path: String) -> Result<S
 
 #[tauri::command]
 fn system_remove_file(app: AppHandle, mod_id: String, path: String) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "fs.remove")?;
+    require_permission(&app, &mod_id, "fs.remove")?;
     fs::remove_file(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn system_remove_dir(app: AppHandle, mod_id: String, path: String) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "fs.remove")?;
+    require_permission(&app, &mod_id, "fs.remove")?;
     fs::remove_dir_all(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn system_read_bytes(app: AppHandle, mod_id: String, path: String) -> Result<Vec<u8>, String> {
-    require_fs_permission(&app, &mod_id, "fs.read")?;
-    fs::read(system_data_path(&app, &mod_id, &path)?).map_err(|error| error.to_string())
+    require_permission(&app, &mod_id, "fs.read")?;
+    let file = system_data_path(&app, &mod_id, &path)?;
+    check_readable_size(&file)?;
+    fs::read(file).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -320,8 +474,9 @@ fn system_write_bytes(
     path: String,
     content: Vec<u8>,
 ) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "fs.write")?;
+    require_permission(&app, &mod_id, "fs.write")?;
     let file = system_data_path(&app, &mod_id, &path)?;
+    check_quota(&mod_data_dir(&app, &mod_id)?, &file, content.len() as u64)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -330,7 +485,7 @@ fn system_write_bytes(
 
 #[tauri::command]
 fn system_move(app: AppHandle, mod_id: String, from: String, to: String) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "fs.move")?;
+    require_permission(&app, &mod_id, "fs.move")?;
     let source = system_data_path(&app, &mod_id, &from)?;
     let destination = system_data_path(&app, &mod_id, &to)?;
     if let Some(parent) = destination.parent() {
@@ -347,6 +502,96 @@ fn system_move(app: AppHandle, mod_id: String, from: String, to: String) -> Resu
 // none of them get their own dedicated command.
 // ---------------------------------------------------------------------
 
+const SHELL_TIMEOUT: Duration = Duration::from_secs(30);
+const SHELL_OUTPUT_CAP: usize = 1024 * 1024;
+const SHELL_MAX_COMMAND_BYTES: usize = 64 * 1024;
+
+type SharedBuf = Arc<Mutex<Vec<u8>>>;
+
+/// Drains a child's pipe on a background thread, keeping at most
+/// SHELL_OUTPUT_CAP bytes. It keeps reading (and discarding) past the cap so
+/// the child never blocks on a full pipe.
+fn drain_capped<R: Read + Send + 'static>(mut reader: R) -> (SharedBuf, std::thread::JoinHandle<()>) {
+    let buffer: SharedBuf = Arc::new(Mutex::new(Vec::new()));
+    let shared = Arc::clone(&buffer);
+    let handle = std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    let room = SHELL_OUTPUT_CAP.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+        }
+    });
+    (buffer, handle)
+}
+
+/// Runs a command via the platform shell (no login shell) with a hard
+/// timeout. Returns (exit code, stdout, stderr, timed_out).
+///
+/// Only the shell process is killed on timeout, not its whole process tree,
+/// and captured output is snapshotted after a short grace period instead of
+/// joined -- a backgrounded grandchild holding the pipe open can't hang us.
+fn run_shell_command(
+    command: &str,
+    cwd: &Path,
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>, bool)> {
+    let mut shell = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    } else {
+        let mut c = Command::new("bash");
+        c.arg("-c").arg(command);
+        c
+    };
+    let mut child = shell
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let (out_buf, out_thread) = drain_capped(child.stdout.take().expect("piped stdout"));
+    let (err_buf, err_thread) = drain_capped(child.stderr.take().expect("piped stderr"));
+
+    let deadline = Instant::now() + SHELL_TIMEOUT;
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    let grace = Instant::now() + Duration::from_millis(500);
+    while !(out_thread.is_finished() && err_thread.is_finished()) && Instant::now() < grace {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stdout = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let stderr = err_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Ok((status.code().unwrap_or(1), stdout, stderr, timed_out))
+}
+
+/// Lua resource limits. The hook fires every LUA_HOOK_INTERVAL VM
+/// instructions; LUA_MAX_HOOK_CALLS of them is roughly 400M instructions,
+/// which stops an accidental infinite loop within a few seconds. (A script
+/// that wraps its loop in pcall can still swallow the error -- this guards
+/// against bugs, not a hostile mod.) Time spent inside host functions such
+/// as run_shell doesn't count against the budget.
+const LUA_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const LUA_HOOK_INTERVAL: u32 = 10_000;
+const LUA_MAX_HOOK_CALLS: u64 = 40_000;
+
 fn build_lua_env(
     app: &AppHandle,
     mod_id: &str,
@@ -357,20 +602,50 @@ fn build_lua_env(
     let lua = Lua::new_with(mlua::StdLib::NONE, mlua::LuaOptions::default())
         .map_err(|error| error.to_string())?;
 
+    if let Err(error) = lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES) {
+        eprintln!("[mods] could not set Lua memory limit: {error}");
+    }
+    let hook_calls = Arc::new(AtomicU64::new(0));
+    lua.set_hook(
+        mlua::HookTriggers {
+            every_nth_instruction: Some(LUA_HOOK_INTERVAL),
+            ..Default::default()
+        },
+        move |_lua, _debug| {
+            if hook_calls.fetch_add(1, Ordering::Relaxed) >= LUA_MAX_HOOK_CALLS {
+                return Err(mlua::Error::RuntimeError(
+                    "script exceeded its instruction budget".into(),
+                ));
+            }
+            Ok(())
+        },
+    );
+
     // Scoped so `globals` (which borrows `lua`) is dropped before we move
     // `lua` out in the Ok(lua) below.
     {
         let globals = lua.globals();
+
+        // StdLib::NONE still leaves the base library, and dofile/loadfile in
+        // it read arbitrary files off disk. Remove anything that touches the
+        // filesystem or module loader (setting a missing global is harmless).
+        for name in ["dofile", "loadfile", "require"] {
+            globals
+                .set(name, mlua::Value::Nil)
+                .map_err(|error| error.to_string())?;
+        }
 
         // ---- fs.ensure_dir: per-mod sandboxed data directory ----
         if permissions.contains("fs.ensure_dir") {
             let data_dir = mod_data_dir(app, mod_id)?;
             let f = lua
                 .create_function(move |_, subpath: String| {
-                    if subpath.contains("..") {
-                        return Err(mlua::Error::RuntimeError("invalid subpath".into()));
-                    }
-                    let dir = data_dir.join(&subpath);
+                    // A bare contains("..") check isn't enough: joining an
+                    // absolute path REPLACES the base, escaping the sandbox.
+                    let relative =
+                        sanitize_relative(&subpath).map_err(mlua::Error::RuntimeError)?;
+                    let dir = data_dir.join(relative);
+                    ensure_within(&data_dir, &dir).map_err(mlua::Error::RuntimeError)?;
                     std::fs::create_dir_all(&dir).map_err(mlua::Error::external)?;
                     Ok(dir.to_string_lossy().to_string())
                 })
@@ -475,31 +750,47 @@ fn build_lua_env(
                 .map_err(|error| error.to_string())?;
         }
 
-        // ---- shell.run: arbitrary command execution. Powerful -- only ever
-        // grant this to a mod whose entire purpose requires it (e.g. a terminal). ----
+        // ---- shell.run: arbitrary command execution. Powerful -- grant it
+        // only to mods that genuinely need it. Runs without a login shell,
+        // with a timeout and a cap on captured output. Defaults to the
+        // mod's own data directory rather than the mods folder. ----
         if permissions.contains("shell.run") {
-            let default_cwd = mods_dir(app)?;
+            let data_dir = mod_data_dir(app, mod_id)?;
             let f = lua
                 .create_function(move |lua, (command, cwd): (String, Option<String>)| {
-                    let output = std::process::Command::new("/usr/bin/bash")
-                        .arg("-lc")
-                        .arg(&command)
-                        .current_dir(
-                            cwd.map(PathBuf::from)
-                                .unwrap_or_else(|| default_cwd.clone()),
-                        )
-                        .output()
-                        .map_err(mlua::Error::external)?;
+                    if command.len() > SHELL_MAX_COMMAND_BYTES {
+                        return Err(mlua::Error::RuntimeError("command is too long".into()));
+                    }
+                    std::fs::create_dir_all(&data_dir).map_err(mlua::Error::external)?;
+                    let cwd = match cwd.as_deref() {
+                        None | Some("") => data_dir.clone(),
+                        Some(given) => {
+                            let given = PathBuf::from(given);
+                            if given.is_absolute() {
+                                // A shell can `cd` anywhere anyway, so an
+                                // absolute cwd isn't a boundary -- it only
+                                // has to be a real directory.
+                                given
+                            } else {
+                                data_dir.join(
+                                    sanitize_relative(&given.to_string_lossy())
+                                        .map_err(mlua::Error::RuntimeError)?,
+                                )
+                            }
+                        }
+                    };
+                    if !cwd.is_dir() {
+                        return Err(mlua::Error::RuntimeError(
+                            "cwd is not an existing directory".into(),
+                        ));
+                    }
+                    let (code, stdout, stderr, timed_out) =
+                        run_shell_command(&command, &cwd).map_err(mlua::Error::external)?;
                     let table = lua.create_table()?;
-                    table.set("code", output.status.code().unwrap_or(1))?;
-                    table.set(
-                        "stdout",
-                        String::from_utf8_lossy(&output.stdout).to_string(),
-                    )?;
-                    table.set(
-                        "stderr",
-                        String::from_utf8_lossy(&output.stderr).to_string(),
-                    )?;
+                    table.set("code", code)?;
+                    table.set("stdout", String::from_utf8_lossy(&stdout).to_string())?;
+                    table.set("stderr", String::from_utf8_lossy(&stderr).to_string())?;
+                    table.set("timedOut", timed_out)?;
                     Ok(table)
                 })
                 .map_err(|error| error.to_string())?;
@@ -524,8 +815,10 @@ fn build_lua_env(
 
 /// Labels are namespaced by mod_id so one mod can never address, hide, or
 /// close a webview belonging to another mod, even by guessing a label.
-fn mod_webview_label(mod_id: &str, instance: &str) -> String {
-    format!("mod-webview-{mod_id}-{instance}")
+fn mod_webview_label(mod_id: &str, instance: &str) -> Result<String, String> {
+    validate_id("mod id", mod_id)?;
+    validate_id("webview instance", instance)?;
+    Ok(format!("mod-webview-{mod_id}-{instance}"))
 }
 
 /// A UA that doesn't match the engine actually rendering it is a bigger
@@ -572,17 +865,25 @@ async fn create_mod_webview(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "webview.access")?;
+    require_permission(&app, &mod_id, "webview.access")?;
     if !mod_enabled(&app, &mod_id)? {
         return Err(format!("mod '{mod_id}' is disabled"));
     }
 
-    let label = mod_webview_label(&mod_id, &instance);
+    let label = mod_webview_label(&mod_id, &instance)?;
     if app.get_webview(&label).is_some() {
         return Err(format!("webview '{label}' already exists — close it first"));
     }
 
     let parsed_url = Url::parse(&url).map_err(|error| error.to_string())?;
+    // Anything but http(s) would let a mod point a webview at file://,
+    // asset://, tauri:// or similar local/privileged origins.
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("only http(s) URLs can be opened in a mod webview".into());
+    }
+    if ![x, y, width, height].iter().all(|v| v.is_finite()) {
+        return Err("webview bounds must be finite numbers".into());
+    }
 
     // add_child must run on the main thread. Same non-blocking oneshot
     // handoff as before -- see the comment on result_rx.await below for
@@ -621,8 +922,8 @@ async fn create_mod_webview(
 
 #[tauri::command]
 fn close_mod_webview(app: AppHandle, mod_id: String, instance: String) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "webview.access")?;
-    let label = mod_webview_label(&mod_id, &instance);
+    require_permission_any_state(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance)?;
     if let Some(webview) = app.get_webview(&label) {
         webview.close().map_err(|error| error.to_string())?;
     }
@@ -636,8 +937,8 @@ fn set_mod_webview_visible(
     instance: String,
     visible: bool,
 ) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "webview.access")?;
-    let label = mod_webview_label(&mod_id, &instance);
+    require_permission_any_state(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance)?;
     let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
@@ -659,8 +960,8 @@ fn set_mod_webview_bounds(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    require_fs_permission(&app, &mod_id, "webview.access")?;
-    let label = mod_webview_label(&mod_id, &instance);
+    require_permission_any_state(&app, &mod_id, "webview.access")?;
+    let label = mod_webview_label(&mod_id, &instance)?;
     let Some(webview) = app.get_webview(&label) else {
         return Ok(());
     };
@@ -676,13 +977,43 @@ fn set_mod_webview_bounds(
     Ok(())
 }
 
+/// Host functions installed by build_lua_env. They exist so a mod's own
+/// backend.lua can call them; they must never be invoked directly as the
+/// entry point, or any caller could reach e.g. run_shell without going
+/// through the mod's logic.
+const HOST_FUNCTIONS: &[&str] = &[
+    "ensure_dir",
+    "settings_read",
+    "settings_write",
+    "mods_toggle",
+    "run_shell",
+];
+
+// Async + spawn_blocking: sync commands run on the main thread, so a slow
+// backend script (or a shell command up to its timeout) would freeze the UI.
 #[tauri::command]
-fn call_mod_backend(
+async fn call_mod_backend(
     app: AppHandle,
     mod_id: String,
     function: String,
     args: Vec<String>,
 ) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        call_mod_backend_blocking(app, mod_id, function, args)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn call_mod_backend_blocking(
+    app: AppHandle,
+    mod_id: String,
+    function: String,
+    args: Vec<String>,
+) -> Result<Value, String> {
+    if HOST_FUNCTIONS.contains(&function.as_str()) {
+        return Err(format!("'{function}' is a host function and can't be called directly"));
+    }
     if !mod_enabled(&app, &mod_id)? {
         return Err(format!("mod '{mod_id}' is disabled"));
     }
@@ -709,10 +1040,15 @@ fn call_mod_backend(
         .call(mlua::Variadic::from_iter(args))
         .map_err(|error| error.to_string())?;
 
-    lua_value_to_json(result)
+    lua_value_to_json(result, 0)
 }
 
-fn lua_value_to_json(value: mlua::Value) -> Result<Value, String> {
+fn lua_value_to_json(value: mlua::Value, depth: usize) -> Result<Value, String> {
+    // A self-referencing Lua table would otherwise recurse until the whole
+    // process dies of a stack overflow.
+    if depth > 32 {
+        return Err("Lua return value is nested too deeply".into());
+    }
     match value {
         mlua::Value::Nil => Ok(Value::Null),
         mlua::Value::Boolean(b) => Ok(Value::Bool(b)),
@@ -725,7 +1061,7 @@ fn lua_value_to_json(value: mlua::Value) -> Result<Value, String> {
             let mut map = Map::new();
             for pair in table.pairs::<String, mlua::Value>() {
                 let (key, val) = pair.map_err(|error| error.to_string())?;
-                map.insert(key, lua_value_to_json(val)?);
+                map.insert(key, lua_value_to_json(val, depth + 1)?);
             }
             Ok(Value::Object(map))
         }
@@ -734,17 +1070,50 @@ fn lua_value_to_json(value: mlua::Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------
-// System commands: updates. Explicitly a core/native feature -- not a
-// permission any mod can be granted, since it drives the app itself.
+// System commands: updates. Explicitly a core/native feature. These two
+// commands are reachable from any script in the webview (there's no per-mod
+// identity to check), so the guards live here instead:
+//   - updates count as configured only if tauri.conf.json has an updater
+//     public key, so signature verification can never be skipped;
+//   - installing needs the user's OK in a NATIVE dialog that scripts can't
+//     click, so a mod can't silently trigger an install;
+//   - only one install can run at a time.
 // ---------------------------------------------------------------------
+
+static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct InstallGuard;
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+/// True only if the updater config carries a non-empty public key.
+fn updater_configured(app: &AppHandle) -> bool {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config.get("pubkey"))
+        .and_then(Value::as_str)
+        .map(|key| !key.trim().is_empty())
+        .unwrap_or(false)
+}
 
 #[tauri::command]
 async fn check_for_updates(app: AppHandle) -> Result<Value, String> {
+    if !updater_configured(&app) {
+        return Ok(serde_json::json!({ "available": false, "configured": false }));
+    }
     let updater = app.updater().map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
         return Ok(serde_json::json!({ "available": false }));
     };
 
+    // `body` is release-note text from the update server: render it with
+    // textContent, never innerHTML.
     Ok(serde_json::json!({
         "available": true,
         "version": update.version,
@@ -756,10 +1125,51 @@ async fn check_for_updates(app: AppHandle) -> Result<Value, String> {
 
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<Value, String> {
+    if !updater_configured(&app) {
+        return Err("updates are not configured (no updater public key)".into());
+    }
+    if UPDATE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        return Err("an update is already in progress".into());
+    }
+    let _guard = InstallGuard;
+
     let updater = app.updater().map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
         return Ok(serde_json::json!({ "installed": false, "available": false }));
     };
+
+    let mut notes = update.body.clone().unwrap_or_default();
+    if notes.chars().count() > 600 {
+        notes = notes.chars().take(600).collect::<String>() + "…";
+    }
+    let prompt = format!(
+        "Version {} is available (you have {}).\n\n{}\n\nInstall it now?",
+        update.version, update.current_version, notes
+    );
+    let dialog_app = app.clone();
+    // blocking_show parks its thread until the user answers, so it runs on
+    // the blocking pool rather than an async worker.
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .message(prompt)
+            .title("Install update?")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Install".into(),
+                "Cancel".into(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+
+    if !confirmed {
+        return Ok(serde_json::json!({
+            "installed": false,
+            "available": true,
+            "declined": true,
+        }));
+    }
 
     update
         .download_and_install(|_chunk, _total| {}, || {})
@@ -778,6 +1188,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let target = mods_dir(app.handle()).map_err(std::io::Error::other)?;
             let bundled = app
@@ -785,7 +1196,9 @@ pub fn run() {
                 .resource_dir()
                 .map_err(std::io::Error::other)?
                 .join("mods");
-            let bundled = if bundled.exists() {
+            // The source-tree fallback is dev-only: in a release build it would
+            // bake the build machine's path in and load mods from there.
+            let bundled = if bundled.exists() || !cfg!(debug_assertions) {
                 bundled
             } else {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -11,10 +11,20 @@ const convertFileSrc = tauriCore?.convertFileSrc || ((filePath, protocol = 'asse
 	`${protocol}://localhost/${encodeURIComponent(filePath)}`);
 
 if (typeof tauriCore?.invoke === 'function') {
-	window.__TAURI_INVOKE__ = tauriCore.invoke.bind(tauriCore);
-	window.__TAURI_CONVERT_FILE_SRC__ = tauriCore?.convertFileSrc
-		? tauriCore.convertFileSrc.bind(tauriCore)
-		: convertFileSrc;
+	// Read-only, non-configurable: other scripts can't replace the bridge
+	// with a wrapper that logs or rewrites calls.
+	Object.defineProperty(window, '__TAURI_INVOKE__', {
+		value: tauriCore.invoke.bind(tauriCore),
+		writable: false,
+		configurable: false,
+	});
+	Object.defineProperty(window, '__TAURI_CONVERT_FILE_SRC__', {
+		value: tauriCore?.convertFileSrc
+			? tauriCore.convertFileSrc.bind(tauriCore)
+			: convertFileSrc,
+		writable: false,
+		configurable: false,
+	});
 }
 
 console.log('[tauri-invoke] Tauri API exposed globally');
