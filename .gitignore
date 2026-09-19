@@ -49,3 +49,6 @@ Dockerfile
 
 # Keys
 src-tauri/~/.tauri/modapp.key
+
+# Random txt files
+secrets.txt
