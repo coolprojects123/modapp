@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Akhilesh Gollapudi",
     "category": "Utility",
     "targets": "all",
     "icon": [
