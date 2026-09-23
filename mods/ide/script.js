@@ -20,6 +20,8 @@ function renderIde(container) {
             <button data-command-id="open-folder">Open Folder...</button>
             <div class="ide-menu-separator"></div>
             <button data-command-id="save">Save<span class="ide-menu-shortcut">Ctrl+S</span></button>
+            <button data-command-id="close-folder">Close Folder</button>
+            <button data-command-id="save-all">Save All<span class="ide-menu-shortcut">Ctrl+Shift+S</span></button>
             <div class="ide-menu-separator"></div>
             <button data-command-id="close-editor">Close Editor<span class="ide-menu-shortcut">Ctrl+W</span></button>
             <button data-command-id="close-all">Close All Editors</button>
@@ -54,11 +56,7 @@ function renderIde(container) {
           </div>
         </div>
       </nav>
-      <header class="ide-header">
-        <div class="ide-brand"><span class="ide-kicker">MODAPP WORKSPACE</span><h1>IDE</h1></div>
-        <div class="ide-header-actions"><span class="ide-branch"><span class="material-symbols-outlined">account_tree</span> mods</span><button class="ide-icon-button" data-action="focus" title="Focus terminal"><span class="material-symbols-outlined">search</span></button><button class="ide-run-button" data-action="run"><span class="material-symbols-outlined">play_arrow</span>Run</button></div>
-      </header>
-      <div class="ide-toolbar"><span class="ide-breadcrumb"><span class="material-symbols-outlined">folder_open</span> mods <span>/</span> <strong data-breadcrumb>scratch.js</strong></span><span class="ide-sync"><span class="material-symbols-outlined">cloud_done</span> local workspace</span></div>
+      <div class="ide-toolbar"><span class="ide-breadcrumb"><span class="material-symbols-outlined">folder_open</span> <span data-workspace-name>mods</span> <span>/</span> <strong data-breadcrumb>scratch.js</strong></span><span class="ide-header-actions"><span class="ide-sync"><span class="material-symbols-outlined">cloud_done</span> local workspace</span><button class="ide-run-button" data-action="run"><span class="material-symbols-outlined">play_arrow</span>Run</button></span></div>
       <div class="ide-grid">
         <div class="ide-activitybar">
           <button class="ide-activity-item active" data-activity="explorer" title="Explorer"><span class="material-symbols-outlined">description</span></button>
@@ -66,7 +64,7 @@ function renderIde(container) {
           <div class="ide-activity-spacer"></div>
           <button class="ide-activity-item" data-activity="terminal" title="Toggle Terminal"><span class="material-symbols-outlined">terminal</span></button>
         </div>
-        <aside class="ide-files"><div class="ide-sidebar-heading"><span>Explorer</span><div class="ide-explorer-actions"><button class="ide-icon-button" data-action="open-file" title="Open file"><span class="material-symbols-outlined">note_add</span></button><button class="ide-icon-button" data-action="open-folder" title="Open folder"><span class="material-symbols-outlined">create_new_folder</span></button><button class="ide-icon-button" data-action="new" title="New file"><span class="material-symbols-outlined">add</span></button></div></div><button class="ide-tree-root" data-action="toggle-tree"><span class="material-symbols-outlined ide-tree-chevron">expand_more</span><span class="material-symbols-outlined folder-icon">folder</span> mods</button><div class="ide-file-list"></div><div class="ide-sidebar-footer"><span class="material-symbols-outlined">info</span> Local mod workspace</div><input class="ide-hidden-input" data-file-input type="file" multiple><input class="ide-hidden-input" data-folder-input type="file" webkitdirectory multiple></aside>
+        <aside class="ide-files"><div class="ide-sidebar-heading"><span>Explorer</span><div class="ide-explorer-actions"><button class="ide-icon-button" data-action="open-file" title="Open file"><span class="material-symbols-outlined">note_add</span></button><button class="ide-icon-button" data-action="open-folder" title="Open folder"><span class="material-symbols-outlined">create_new_folder</span></button><button class="ide-icon-button" data-action="new" title="New file"><span class="material-symbols-outlined">add</span></button></div></div><button class="ide-tree-root" data-action="toggle-tree"><span class="material-symbols-outlined ide-tree-chevron">expand_more</span><span class="material-symbols-outlined folder-icon">folder</span> <span data-workspace-name>mods</span></button><div class="ide-file-list"></div><div class="ide-sidebar-footer"><span class="material-symbols-outlined">info</span> Local mod workspace</div><input class="ide-hidden-input" data-file-input type="file" multiple><input class="ide-hidden-input" data-folder-input type="file" webkitdirectory multiple></aside>
         <div class="ide-main">
           <section class="ide-editor-panel">
             <div class="ide-tabs"></div>
@@ -80,11 +78,11 @@ function renderIde(container) {
                 <button class="ide-empty-action" data-command-id="command-palette"><span class="material-symbols-outlined">terminal</span>Show All Commands <kbd>Ctrl+Shift+P</kbd></button>
               </div>
             </div>
-            <footer class="ide-statusbar"><span><span class="material-symbols-outlined">code</span><strong data-language>JavaScript</strong></span><span>Spaces: 2</span><span>UTF-8</span><span data-cursor>Ln 1, Col 1</span></footer>
           </section>
-          <section class="ide-terminal-panel"><div class="ide-panel-bar"><span><span class="material-symbols-outlined">terminal</span> Terminal</span><span class="ide-status"><span class="ide-live-dot"></span> native bash</span></div><div class="ide-term-mount"></div></section>
+          <section class="ide-terminal-panel"><div class="ide-panel-bar"><span><span class="material-symbols-outlined">terminal</span> Terminal</span><select class="ide-shell-select" data-shell-select title="Shell"></select></div><div class="ide-term-mount"></div></section>
         </div>
       </div>
+      <footer class="ide-statusbar"><span><span class="material-symbols-outlined">code</span><strong data-language>JavaScript</strong></span><span>Spaces: 2</span><span>UTF-8</span><span data-cursor>Ln 1, Col 1</span></footer>
     </div>
     <div class="ide-context-menu" data-context-menu hidden>
       <button data-menu-action="close">Close</button>
@@ -102,7 +100,12 @@ function renderIde(container) {
   let fallback;
   
   // Tree structure for file explorer: { type: 'folder'|'file', name, path, children, ...fileProps }
-  let fileTree = [{ type: 'folder', name: 'mods', path: 'mods', children: [], expanded: true }];
+  const ROOT_KEY = '__root__';
+  let workspaceName = 'mods';
+  let workspaceHandle = null;
+  let autoSave = true;
+  const saveTimers = new Map();
+  let fileTree = [{ type: 'folder', name: workspaceName, path: ROOT_KEY, children: [], expanded: true }];
   
   // Map from file path to tree node for quick lookup
   const fileTreeMap = new Map();
@@ -139,7 +142,7 @@ function renderIde(container) {
       const display = hasChildren && !isExpanded ? 'none' : 'block';
       return `
         <div class="ide-tree-node folder ${isActive ? 'active' : ''}" data-path="${ideEscape(node.path)}">
-          <button class="ide-tree-toggle" data-action="toggle" data-path="${ideEscape(node.path)}">
+          <button class="ide-tree-toggle" data-action="toggle" data-path="${ideEscape(node.path)}" style="padding-left: ${depth * 14 + 8}px">
             <span class="material-symbols-outlined ide-tree-chevron">${chevron}</span>
             <span class="material-symbols-outlined folder-icon">folder</span>
             <span class="ide-tree-label">${ideEscape(node.name)}</span>
@@ -150,7 +153,7 @@ function renderIde(container) {
       // File node
       const dirty = node.dirty ? '<span class="ide-dirty-dot"></span>' : '';
       return `
-        <button class="ide-tree-node file ${isActive ? 'active' : ''}" data-file="${ideEscape(node.path)}" style="padding-left: ${depth * 16 + 32}px">
+        <button class="ide-tree-node file ${isActive ? 'active' : ''}" data-file="${ideEscape(node.path)}" style="padding-left: ${depth * 14 + 28}px">
           <span class="material-symbols-outlined">${fileIcon(node)}</span>
           <span class="ide-tree-label">${ideEscape(node.name.split('/').pop())}</span>${dirty}
         </button>`;
@@ -162,7 +165,7 @@ function renderIde(container) {
     buildFileTree();
     
     // Render tree
-    fileList.innerHTML = fileTree.map(node => renderTreeNode(node, 0)).join('');
+    fileList.innerHTML = fileTree[0].children.map(node => renderTreeNode(node, 1)).join('');
     
     // Render tabs (only files, not folders)
     tabs.innerHTML = files.filter((file) => file.open).map((file) => {
@@ -218,11 +221,19 @@ function renderIde(container) {
     active = next;
     emptyState.hidden = true;
     mount.hidden = false;
-    container.querySelector('[data-breadcrumb]').textContent = next.name.split('/').pop();
+    container.querySelector('[data-breadcrumb]').textContent = next.name.split('/').join(' / ');
     container.querySelector('[data-language]').textContent = next.language === 'javascript' ? 'JavaScript' : next.language[0].toUpperCase() + next.language.slice(1);
     renderFiles();
-    if (editor) editor.setValue(next.value);
-    else if (fallback) fallback.value = next.value;
+    if (next.lazy) {
+      setEditorValue('');
+      const target = next;
+      nativeRead(target.fsRoot, target.name).then((text) => {
+        target.value = text; target.lazy = false;
+        if (active === target) setEditorValue(text);
+      }).catch(() => { target.lazy = false; notify(`Cannot read ${target.name}`); });
+    } else {
+      setEditorValue(next.value);
+    }
   }
   function clearActiveEditor() {
     active = null;
@@ -236,7 +247,6 @@ function renderIde(container) {
   function closeFile(nameOrPath, { skipConfirm = false } = {}) {
     const file = files.find((item) => item.name === nameOrPath);
     if (!file || !file.open) return;
-    if (file.dirty && !skipConfirm && !window.confirm(`${file.name.split('/').pop()} has unsaved changes. Close anyway?`)) return;
     file.open = false;
     if (file === active) {
       const next = files.find((item) => item.open);
@@ -260,7 +270,26 @@ function renderIde(container) {
     files.push(file);
     selectFile(file.name);
   }
-  function changed(value) { if (!active) return; active.value = value; active.dirty = true; renderFiles(); }
+  let suppressChange = false;
+  function setEditorValue(value) {
+    suppressChange = true;
+    try { if (editor) editor.setValue(value); else if (fallback) fallback.value = value; } finally { suppressChange = false; }
+  }
+  function changed(value) {
+    if (!active || suppressChange) return;
+    const wasDirty = active.dirty;
+    active.value = value; active.dirty = true;
+    if (!wasDirty) renderFiles();
+    if (autoSave && active.handle) scheduleAutoSave(active);
+  }
+  function scheduleAutoSave(file) {
+    clearTimeout(saveTimers.get(file));
+    saveTimers.set(file, setTimeout(async () => {
+      saveTimers.delete(file);
+      if (!file.dirty || !file.handle) return;
+      try { await writeToHandle(file.handle, file.value); file.dirty = false; renderFiles(); } catch (error) { console.warn('Auto save failed for', file.name, error); }
+    }, 800));
+  }
   function languageFor(name) { const extension = name.split('.').pop().toLowerCase(); return extension === 'json' ? 'json' : extension === 'md' ? 'markdown' : extension === 'css' ? 'css' : extension === 'html' ? 'html' : 'javascript'; }
   
   function findOrCreateFolder(tree, pathParts, index = 0) {
@@ -329,9 +358,9 @@ function renderIde(container) {
     fileTree.forEach(saveExpandedState);
     
     // Build new tree
-    fileTree = [{ type: 'folder', name: 'mods', path: 'mods', children: [], expanded: true }];
+    fileTree = [{ type: 'folder', name: workspaceName, path: ROOT_KEY, children: [], expanded: true }];
     fileTreeMap.clear();
-    fileTreeMap.set('mods', fileTree[0]);
+    fileTreeMap.set(ROOT_KEY, fileTree[0]);
     
     for (const file of files) {
       addFileToTree(file);
@@ -400,8 +429,284 @@ function renderIde(container) {
     // happens to sit last in the files array.
     if (lastOpened) selectFile(lastOpened);
   }
-  function saveActive() {
+  // ---- Real filesystem access (File System Access API) ----
+  const hasFsApi = typeof window.showDirectoryPicker === 'function';
+  const SKIP_DIRS = new Set(['node_modules', '.git', 'target', 'dist', 'build', '.next', '__pycache__', '.venv']);
+  const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|bmp|pdf|zip|gz|tar|7z|rar|exe|dll|so|dylib|wasm|woff2?|ttf|otf|mp[34]|mov|avi|webm|ogg|wav|bin|db|sqlite|lock)$/i;
+  const MAX_FILE_BYTES = 1024 * 1024;
+  const MAX_FILES = 1000;
+  let notifyTimer;
+  function notify(message) {
+    const slot = container.querySelector('.ide-statusbar > span:first-child');
+    if (!slot) return;
+    if (slot.dataset.original === undefined) slot.dataset.original = slot.innerHTML;
+    slot.textContent = message;
+    clearTimeout(notifyTimer);
+    notifyTimer = setTimeout(() => { slot.innerHTML = slot.dataset.original; }, 6000);
+  }
+
+  async function walkDirectory(dirHandle, prefix, out) {
+    const entries = [];
+    for await (const entry of dirHandle.values()) entries.push(entry);
+    entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
+    for (const entry of entries) {
+      if (out.files.length >= MAX_FILES) { out.truncated = true; return; }
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.kind === 'directory') {
+        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        await walkDirectory(entry, path, out);
+      } else {
+        if (BINARY_EXT.test(entry.name)) { out.skipped++; continue; }
+        const file = await entry.getFile();
+        if (file.size > MAX_FILE_BYTES) { out.skipped++; continue; }
+        out.files.push({ path, handle: entry, text: await file.text() });
+      }
+    }
+  }
+  function setWorkspaceName(name) {
+    workspaceName = name;
+    container.querySelectorAll('[data-workspace-name]').forEach((el) => { el.textContent = name; });
+  }
+  async function resetWorkspace(name, handle) {
+    await saveAll();
+    saveTimers.forEach((timer) => clearTimeout(timer));
+    saveTimers.clear();
+    files.splice(0, files.length);
+    workspaceHandle = handle || null;
+    setWorkspaceName(name);
+    active = null;
+    setEditorValue('');
+    workspaceRoot = null;
+    clearActiveEditor();
+  }
+  async function closeFolder() { await resetWorkspace('No Folder', null); }
+  async function openFolderPicker() {
+    if (!hasFsApi) return folderInput.click();
+    let dirHandle;
+    try { dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+    catch (error) { if (error && error.name === 'AbortError') return; console.warn(error); return folderInput.click(); }
+    const out = { files: [], skipped: 0, truncated: false };
+    await walkDirectory(dirHandle, '', out);
+    await resetWorkspace(dirHandle.name, dirHandle);
+    let first = null;
+    const preferred = ['README.md', 'readme.md', 'mod.json', 'package.json'];
+    for (const item of out.files) {
+      files.push({ name: item.path, language: languageFor(item.path.split('/').pop()), value: item.text, open: false, dirty: false, imported: true, handle: item.handle });
+    }
+    first = (preferred.find((name) => files.some((f) => f.name === name))) || null;
+    buildFileTree();
+    renderFiles();
+    if (first) selectFile(first);
+    notify(`Opened ${dirHandle.name}: ${out.files.length} files` + (out.skipped ? `, ${out.skipped} skipped (binary/large)` : '') + (out.truncated ? `, stopped at ${MAX_FILES} files` : ''));
+  }
+  async function openFilePicker() {
+    if (typeof window.showOpenFilePicker !== 'function') return fileInput.click();
+    let handles;
+    try { handles = await window.showOpenFilePicker({ multiple: true }); }
+    catch (error) { if (error && error.name === 'AbortError') return; console.warn(error); return fileInput.click(); }
+    let last = null;
+    for (const handle of handles) {
+      const existing = files.find((file) => file.handle && file.name === handle.name);
+      if (existing) { existing.open = true; last = existing.name; continue; }
+      const text = await (await handle.getFile()).text();
+      files.push({ name: handle.name, language: languageFor(handle.name), value: text, open: false, dirty: false, imported: true, handle });
+      last = handle.name;
+    }
+    buildFileTree();
+    renderFiles();
+    if (last) selectFile(last);
+  }
+
+  // ---- Native filesystem via the shell API (no browser permission prompts) ----
+  // Shell-independent: on Windows every operation runs `powershell -EncodedCommand` (works from cmd, PowerShell,
+  // Git Bash, WSL, or any custom terminal); elsewhere it runs `sh -c '...'`. The target folder is set inside the
+  // script itself, so nothing depends on how the terminal treats its working directory.
+  const LAST_FOLDER_KEY = 'ide.lastFolder';
+  const lsGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  const lsSet = (key, value) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
+  const IS_WINDOWS = /Windows/i.test(navigator.userAgent);
+  let workspaceRoot = null;
+  function shellAvailable() { return !!(window.ModAPI && ModAPI.native && ModAPI.native.shell && ModAPI.native.shell.run); }
+  function isAbsolutePath(path) { return /^([A-Za-z]:[\\/]|[\\/]{2}|\/|~)/.test(path); }
+  function normalizeUserPath(raw) { return raw.trim().replace(/^["']|["']$/g, ''); }
+  function cleanRel(path) { return path.replace(/\\/g, '/').replace(/^\.\//, ''); }
+  function toB64(text) { return btoa(unescape(encodeURIComponent(text))); }
+  const shq = (text) => "'" + String(text).replace(/'/g, "'\\''") + "'";
+  const psq = (text) => "'" + String(text).replace(/'/g, "''") + "'";
+  function psEncode(script) {
+    const full = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8;" + script;
+    let binary = '';
+    for (let i = 0; i < full.length; i++) { const c = full.charCodeAt(i); binary += String.fromCharCode(c & 255, c >> 8); }
+    return btoa(binary);
+  }
+  const SKIP_LIST = ['node_modules', '.git', 'target', 'dist', 'build', '__pycache__', '.venv'];
+  const adapter = IS_WINDOWS ? {
+    chunk: 1800,
+    run: (script) => ModAPI.ide.runCommand(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${psEncode(script)}`, ''),
+    check: (root) => `Set-Location -LiteralPath ${psq(root)}; [Console]::Out.Write((Get-Location).Path)`,
+    list: (root) => `Set-Location -LiteralPath ${psq(root)}; $base=(Get-Location).Path.TrimEnd('\\')+'\\'; $skip=@(${SKIP_LIST.map(psq).join(',')}); ` +
+      `function Walk($d){ Get-ChildItem -LiteralPath $d -Force -ErrorAction SilentlyContinue | ForEach-Object { if($_.PSIsContainer){ if(($skip -notcontains $_.Name) -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)){ Walk $_.FullName } } elseif($_.Length -lt 1048576){ $_.FullName.Substring($base.Length).Replace('\\','/') } } }; ` +
+      `Walk (Get-Location).Path | Select-Object -First ${MAX_FILES + 1}`,
+    read: (root, rel) => `Set-Location -LiteralPath ${psq(root)}; [Console]::Out.Write([IO.File]::ReadAllText((Join-Path (Get-Location).Path ${psq(rel)})))`,
+    write: (root, rel, b64, first) => `Set-Location -LiteralPath ${psq(root)}; $p=Join-Path (Get-Location).Path ${psq(rel)}; $b=[Convert]::FromBase64String(${psq(b64)}); ` +
+      (first ? `[void][IO.Directory]::CreateDirectory((Split-Path -Parent $p)); [IO.File]::WriteAllBytes($p,$b)` : `$f=[IO.File]::Open($p,[IO.FileMode]::Append); $f.Write($b,0,$b.Length); $f.Close()`),
+  } : {
+    chunk: 6000,
+    run: (script) => ModAPI.ide.runCommand(`sh -c ${shq(script)}`, ''),
+    check: (root) => `cd ${shq(root)} && pwd`,
+    list: (root) => `cd ${shq(root)} && find . \\( ${SKIP_LIST.map((n) => `-name ${shq(n)}`).join(' -o ')} \\) -prune -o -type f -size -1024k -print | head -${MAX_FILES + 1}`,
+    read: (root, rel) => `cd ${shq(root)} && cat -- ${shq(rel)}`,
+    write: (root, rel, b64, first) => `cd ${shq(root)} && ` + (first ? `mkdir -p "$(dirname ${shq(rel)})" && printf %s ${shq(b64)} | base64 -d > ${shq(rel)}` : `printf %s ${shq(b64)} | base64 -d >> ${shq(rel)}`),
+  };
+  const stripBom = (text) => text.replace(/^\uFEFF/, '');
+  async function nativeRead(root, rel) {
+    const result = await adapter.run(adapter.read(root, rel));
+    if (result.code !== 0) throw new Error((result.stderr || 'read failed').trim());
+    return stripBom(result.stdout);
+  }
+  async function nativeWrite(root, rel, value) {
+    const b64 = toB64(value);
+    for (let i = 0, first = true; first || i < b64.length; i += adapter.chunk, first = false) {
+      const result = await adapter.run(adapter.write(root, rel, b64.slice(i, i + adapter.chunk), first));
+      if (result.code !== 0) throw new Error((result.stderr || 'write failed').trim());
+    }
+  }
+  function makeNativeHandle(root, path) { return { nativeWrite: (value) => nativeWrite(root, path, value) }; }
+  // Prompt for a path using the palette (dark, in-app) instead of a browser dialog.
+  let pathResolver = null;
+  function askPath(title, initial = '') {
+    return new Promise((resolve) => {
+      closeAllMenus();
+      if (pathResolver) pathResolver(null);
+      pathResolver = resolve;
+      paletteMode = 'path';
+      paletteInput.placeholder = title;
+      paletteInput.value = initial;
+      const last = lsGet(LAST_FOLDER_KEY);
+      paletteList.innerHTML = `<div class="ide-command-empty">${ideEscape(title)} — press Enter</div>` + (last ? `<button class="ide-command-item" data-recent="${ideEscape(last)}">${ideEscape(last)}<span class="ide-command-shortcut">recent</span></button>` : '');
+      paletteList.querySelectorAll('[data-recent]').forEach((button) => button.addEventListener('click', () => finishPath(button.dataset.recent)));
+      // Defer so the click that opened this doesn't immediately close it via the document click handler.
+      setTimeout(() => { commandPalette.hidden = false; paletteInput.focus(); paletteInput.select(); }, 0);
+    });
+  }
+  function finishPath(value) {
+    const resolve = pathResolver; pathResolver = null;
+    commandPalette.hidden = true;
+    if (resolve) resolve(value == null ? null : normalizeUserPath(value));
+  }
+  function splitAbsolute(raw) { const cut = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\')); return { root: raw.slice(0, cut) || raw.slice(0, cut + 1) || '/', rel: raw.slice(cut + 1) }; }
+  async function openFolderNative() {
+    if (!shellAvailable()) return openFolderPicker();
+    let raw = null;
+    try { raw = await ModAPI.ide.dialog.pickFolder({ title: 'Open Folder', defaultDir: lsGet(LAST_FOLDER_KEY) }); }
+    catch (error) { raw = await askPath('Open folder (full path)', lsGet(LAST_FOLDER_KEY) || ''); }
+    if (!raw) return;
+    const check = await adapter.run(adapter.check(raw)).catch((error) => ({ code: 1, stdout: '', stderr: String(error) }));
+    if (check.code !== 0) { notify(`Cannot open folder: ${raw} ${(check.stderr || '').trim().split('\n')[0]}`); return; }
+    const list = await adapter.run(adapter.list(raw));
+    if (list.code !== 0 && !list.stdout) { notify(`Cannot read folder: ${raw}`); return; }
+    const lines = stripBom(list.stdout).split('\n').map((line) => line.replace(/\r$/, '').replace(/^\.\//, '')).filter(Boolean);
+    const paths = lines.filter((line) => !BINARY_EXT.test(line)).sort((x, y) => {
+      const dx = x.includes('/'), dy = y.includes('/');
+      return dx === dy ? x.localeCompare(y) : dx ? -1 : 1;
+    });
+    const truncated = paths.length > MAX_FILES;
+    const shown = paths.slice(0, MAX_FILES);
+    const name = raw.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || raw;
+    await resetWorkspace(name, null);
+    workspaceRoot = raw;
+    lsSet(LAST_FOLDER_KEY, raw);
+    for (const path of shown) {
+      files.push({ name: path, language: languageFor(path.split('/').pop()), value: '', lazy: true, open: false, dirty: false, imported: true, fsRoot: raw, handle: makeNativeHandle(raw, path) });
+    }
+    buildFileTree();
+    renderFiles();
+    const preferred = ['README.md', 'readme.md', 'mod.json', 'package.json'].find((n) => files.some((f) => f.name === n));
+    if (preferred) selectFile(preferred);
+    notify(`Opened ${name}: ${shown.length} files` + (lines.length - paths.length ? `, ${lines.length - paths.length} binary skipped` : '') + (truncated ? `, stopped at ${MAX_FILES} files` : ''));
+  }
+  function resolveTarget(raw) {
+    if (isAbsolutePath(raw)) return splitAbsolute(raw);
+    if (workspaceRoot) return { root: workspaceRoot, rel: cleanRel(raw) };
+    return null;
+  }
+  // Paths from the native dialogs are absolute. Inside the open folder they become folder-relative so the tree stays consistent.
+  function targetForAbsolute(abs) {
+    const norm = (value) => value.replace(/\\/g, '/');
+    if (workspaceRoot) {
+      const prefix = norm(workspaceRoot).replace(/\/+$/, '') + '/';
+      const full = norm(abs);
+      if (full.toLowerCase().startsWith(prefix.toLowerCase())) return { root: workspaceRoot, rel: full.slice(prefix.length) };
+    }
+    return splitAbsolute(abs);
+  }
+  async function openTarget(target, label) {
+    const existing = files.find((f) => f.name === target.rel && f.fsRoot === target.root);
+    if (existing) { selectFile(existing.name); return; }
+    try {
+      const text = await nativeRead(target.root, target.rel);
+      files.push({ name: target.rel, language: languageFor(target.rel.split('/').pop()), value: text, lazy: false, open: false, dirty: false, imported: true, fsRoot: target.root, handle: makeNativeHandle(target.root, target.rel) });
+      buildFileTree(); renderFiles(); selectFile(target.rel);
+    } catch (error) { notify(`Cannot open file: ${label}`); }
+  }
+  async function openFileNative() {
+    if (!shellAvailable()) return openFilePicker();
+    let picked;
+    try { picked = await ModAPI.ide.dialog.pickFiles({ title: 'Open File', defaultDir: workspaceRoot || lsGet(LAST_FOLDER_KEY), multiple: true }); }
+    catch (error) {
+      const raw = await askPath(workspaceRoot ? 'Open file (path, relative to folder or absolute)' : 'Open file (full path)', '');
+      const target = raw ? resolveTarget(raw) : null;
+      if (raw && !target) notify('Open a folder first, or use a full path');
+      if (target) await openTarget(target, raw);
+      return;
+    }
+    for (const abs of picked) await openTarget(targetForAbsolute(abs), abs);
+  }
+  async function saveNative(file) {
+    try {
+      if (!file.handle) {
+        let target = null;
+        try {
+          const abs = await ModAPI.ide.dialog.pickSaveFile({ title: 'Save As', defaultDir: workspaceRoot || lsGet(LAST_FOLDER_KEY), defaultName: file.name.split('/').pop() });
+          if (!abs) return;
+          target = targetForAbsolute(abs);
+        } catch (error) {
+          const raw = await askPath('Save as (path, relative to folder or absolute)', '');
+          if (!raw) return;
+          target = resolveTarget(raw);
+          if (!target) { notify('Open a folder first, or use a full path'); return; }
+        }
+        file.fsRoot = target.root; file.handle = makeNativeHandle(target.root, target.rel);
+        file.name = target.rel; file.language = languageFor(target.rel.split('/').pop());
+      }
+      await writeToHandle(file.handle, file.value);
+      file.dirty = false;
+      renderFiles();
+    } catch (error) { notify(`Save failed: ${error.message || error}`); }
+  }
+  async function writeToHandle(handle, value) {
+    if (handle.nativeWrite) return handle.nativeWrite(value);
+    const writable = await handle.createWritable();
+    await writable.write(value);
+    await writable.close();
+  }
+  async function saveActive() {
     if (!active) return;
+    if (shellAvailable()) return saveNative(active);
+    try {
+      if (!active.handle && typeof window.showSaveFilePicker === 'function') {
+        active.handle = await window.showSaveFilePicker({ suggestedName: active.name.split('/').pop() });
+      }
+      if (active.handle) {
+        await writeToHandle(active.handle, active.value);
+        active.dirty = false;
+        renderFiles();
+        return;
+      }
+    } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      console.warn('Direct save failed, falling back to download', error);
+    }
     const blob = new Blob([active.value], { type: 'text/plain;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -411,11 +716,22 @@ function renderIde(container) {
     active.dirty = false;
     renderFiles();
   }
+  async function saveAll() {
+    const current = active;
+    for (const file of files.filter((item) => item.dirty && item.handle)) {
+      try { await writeToHandle(file.handle, file.value); file.dirty = false; } catch (error) { console.warn('Save failed for', file.name, error); }
+    }
+    active = current;
+    renderFiles();
+  }
   function openQuickPick() {
-    const query = window.prompt('Quick Open', '');
-    if (query === null) return;
-    const match = files.find((file) => file.name.toLowerCase().includes(query.toLowerCase()));
-    if (match) selectFile(match.name);
+    closeAllMenus();
+    paletteMode = 'files';
+    paletteInput.placeholder = 'Search files by name';
+    paletteInput.value = '';
+    renderPaletteList('');
+    commandPalette.hidden = false;
+    paletteInput.focus();
   }
   function createFallback() {
     fallback = document.createElement('textarea');
@@ -427,30 +743,43 @@ function renderIde(container) {
   }
   function createEditor() {
     if (!window.monaco) return createFallback();
-    editor = window.monaco.editor.create(mount, { value: active ? active.value : '', language: active ? active.language : 'javascript', theme: 'vs-dark', automaticLayout: true, minimap: { enabled: true }, fontSize: 13, lineHeight: 21, padding: { top: 16 }, scrollBeyondLastLine: false, tabSize: 2 });
+    if (fallback) { fallback.remove(); fallback = null; }
+    window.monaco.editor.defineTheme('modapp-black', { base: 'vs-dark', inherit: true, rules: [], colors: {
+      'editor.background': '#000000', 'editorGutter.background': '#000000', 'minimap.background': '#000000',
+      'editor.lineHighlightBackground': '#0d0d0d', 'editorWidget.background': '#0a0a0a', 'scrollbarSlider.background': '#ffffff18',
+      'editorIndentGuide.background1': '#1a1a1a', 'editorLineNumber.foreground': '#555555' } });
+    editor = window.monaco.editor.create(mount, { value: active ? active.value : '', language: active ? active.language : 'javascript', theme: 'modapp-black', automaticLayout: true, minimap: { enabled: true }, fontSize: 13, lineHeight: 21, padding: { top: 16 }, scrollBeyondLastLine: false, tabSize: 2 });
     editor.onDidChangeModelContent(() => changed(editor.getValue()));
     editor.onDidChangeCursorPosition((event) => { container.querySelector('[data-cursor]').textContent = `Ln ${event.position.lineNumber}, Col ${event.position.column}`; });
   }
   function loadMonaco() {
     if (window.monaco) return createEditor();
-    const loader = document.createElement('script');
-    loader.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js';
-    loader.onload = () => { window.require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs' } }); window.require(['vs/editor/editor.main'], createEditor, createFallback); };
-    loader.onerror = createFallback;
-    document.head.appendChild(loader);
+    if (!window.__ideMonacoLoad) {
+      window.__ideMonacoLoad = new Promise((resolve, reject) => {
+        const base = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs';
+        const loader = document.createElement('script');
+        loader.src = `${base}/loader.js`;
+        loader.onload = () => { window.require.config({ paths: { vs: base } }); window.require(['vs/editor/editor.main'], resolve, reject); };
+        loader.onerror = () => { window.__ideMonacoLoad = null; reject(new Error('Monaco failed to load')); };
+        document.head.appendChild(loader);
+      });
+    }
+    window.__ideMonacoLoad.then(() => { if (!editor) createEditor(); }, () => { if (!editor && !fallback) createFallback(); });
     setTimeout(() => { if (!editor && !fallback) createFallback(); }, 3500);
   }
   // --- xterm.js terminal ---------------------------------------------
   let term;
   let fitAddon;
-  let lineBuffer = '';
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
       script.src = src;
-      script.onload = resolve;
-      script.onerror = () => reject(new Error(`Failed to load ${src}`));
+      const amd = window.define && window.define.amd;
+      if (amd) window.define.amd = undefined;
+      const restore = () => { if (amd && window.define) window.define.amd = amd; };
+      script.onload = () => { restore(); resolve(); };
+      script.onerror = () => { restore(); reject(new Error(`Failed to load ${src}`)); };
       document.head.appendChild(script);
     });
   }
@@ -462,75 +791,83 @@ function renderIde(container) {
     link.dataset.ideXtermCss = 'true';
     document.head.appendChild(link);
   }
-  function writePrompt() { term.write('\r\n$ '); }
-  function writeBanner() {
-    term.writeln('modapp terminal');
-    term.writeln('Ready in mods/');
-    writePrompt();
+  let ptySession = null;
+  let currentShell = lsGet('ide.shell');
+  const shellSelect = container.querySelector('[data-shell-select]');
+
+  async function stopTerminalSession() {
+    const old = ptySession;
+    ptySession = null;
+    if (old) await old.close();
   }
-  function handleTermData(data) {
-    if (data === '\r') {
-      const command = lineBuffer;
-      lineBuffer = '';
-      term.write('\r\n');
-      runCommand(command);
-      return;
-    }
-    if (data === '\u007f') {
-      if (lineBuffer.length) { lineBuffer = lineBuffer.slice(0, -1); term.write('\b \b'); }
-      return;
-    }
-    if (data === '\u0003') { // Ctrl+C
-      lineBuffer = '';
-      term.write('^C');
-      writePrompt();
-      return;
-    }
-    if (data.charCodeAt(0) < 32) return; // ignore other control chars
-    lineBuffer += data;
-    term.write(data);
-  }
-  async function runCommand(command) {
-    if (!command.trim()) { writePrompt(); return; }
+  async function startTerminalSession(shellId) {
+    await stopTerminalSession();
+    term.reset();
+    let mine = null;
     try {
-      const result = await ModAPI.ide.runCommand(command);
-      const text = (result.stdout || result.stderr || `(exit ${result.code})`).replace(/\n/g, '\r\n');
-      term.write(text.endsWith('\r\n') ? text : `${text}\r\n`);
+      mine = await ModAPI.ide.pty.open({
+        shell: shellId,
+        cols: term.cols,
+        rows: term.rows,
+        cwd: workspaceRoot,
+        onData: (data) => term.write(data),
+        onExit: (code) => {
+          if (!mine || ptySession !== mine) return;
+          ptySession = null;
+          mine.close();
+          term.write(`\r\n[Process exited with code ${code}. Press any key to restart.]\r\n`);
+        },
+      });
+      ptySession = mine;
     } catch (error) {
-      term.write(`${error.message}\r\n`);
+      term.write(`\r\n${error && error.message ? error.message : error}\r\n`);
     }
-    writePrompt();
   }
-  function clearTerminal() {
-    term.reset();
-    term.writeln('Terminal cleared');
-    writePrompt();
+  function sendToTerminal(text) {
+    if (ptySession) ModAPI.ide.pty.write(ptySession.session, text).catch(() => {});
   }
-  function newTerminalSession() {
-    lineBuffer = '';
-    term.reset();
-    writeBanner();
-  }
+  function clearTerminal() { term.clear(); }
+  function newTerminalSession() { startTerminalSession(currentShell); }
   function fitTerminal() { if (fitAddon) { try { fitAddon.fit(); } catch { /* mount not visible yet */ } } }
   async function initTerminal() {
     ensureXtermStyles();
     if (!window.Terminal) await loadScript('http://localhost:1430/mods/ide/vendor/xterm.js');
     if (!window.FitAddon) await loadScript('http://localhost:1430/mods/ide/vendor/addon-fit.js');
-    term = new window.Terminal({
-      convertEol: true,
-      fontFamily: 'ui-monospace, "SF Mono", monospace',
+    const TerminalCtor = typeof window.Terminal === 'function' ? window.Terminal : window.Terminal && window.Terminal.Terminal;
+    const FitCtor = typeof window.FitAddon === 'function' ? window.FitAddon : window.FitAddon && window.FitAddon.FitAddon;
+    if (!TerminalCtor) throw new Error('xterm.js did not expose a Terminal constructor');
+    term = new TerminalCtor({
+      fontFamily: 'ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace',
       fontSize: 13,
       cursorBlink: true,
-      theme: { background: '#1e1e1e', foreground: '#cccccc', cursor: '#cccccc', selectionBackground: '#264f78' },
+      allowProposedApi: true,
+      theme: { background: '#000000', foreground: '#cccccc', cursor: '#cccccc', selectionBackground: '#264f78' },
     });
-    fitAddon = new window.FitAddon.FitAddon();
+    fitAddon = new FitCtor();
     term.loadAddon(fitAddon);
     term.open(termMount);
     fitTerminal();
-    writeBanner();
-    term.onData(handleTermData);
+    term.onData((data) => { if (ptySession) sendToTerminal(data); else newTerminalSession(); });
+    term.onResize(({ cols, rows }) => { if (ptySession) ModAPI.ide.pty.resize(ptySession.session, cols, rows).catch(() => {}); });
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (ctrl && event.key === '`') return false; // let the IDE toggle the panel
+      if (ctrl && event.shiftKey && event.key.toLowerCase() === 'c') { navigator.clipboard.writeText(term.getSelection()); return false; }
+      if (ctrl && event.shiftKey && event.key.toLowerCase() === 'v') { navigator.clipboard.readText().then((text) => term.paste(text)); return false; }
+      if (ctrl && !event.shiftKey && event.key.toLowerCase() === 'c' && term.hasSelection()) { navigator.clipboard.writeText(term.getSelection()); return false; }
+      return true;
+    });
     termMount.addEventListener('click', () => term.focus());
-    window.addEventListener('resize', fitTerminal);
+    new ResizeObserver(() => fitTerminal()).observe(termMount);
+
+    let shells = [];
+    try { shells = await ModAPI.ide.pty.shells(); } catch (error) { term.write(`${error && error.message ? error.message : error}\r\n`); return; }
+    shellSelect.innerHTML = shells.map((shell) => `<option value="${ideEscape(shell.id)}">${ideEscape(shell.label)}</option>`).join('');
+    if (!shells.some((shell) => shell.id === currentShell)) currentShell = shells[0] && shells[0].id;
+    shellSelect.value = currentShell || '';
+    shellSelect.addEventListener('change', () => { currentShell = shellSelect.value; lsSet('ide.shell', currentShell); newTerminalSession(); term.focus(); });
+    await startTerminalSession(currentShell);
     term.focus();
   }
 
@@ -600,9 +937,12 @@ function renderIde(container) {
 
   const COMMANDS = [
     { id: 'new-file', label: 'File: New File', shortcut: 'Ctrl+N', run: newFile },
-    { id: 'open-file', label: 'File: Open File...', shortcut: 'Ctrl+O', run: () => fileInput.click() },
-    { id: 'open-folder', label: 'File: Open Folder...', run: () => folderInput.click() },
+    { id: 'open-file', label: 'File: Open File...', shortcut: 'Ctrl+O', run: openFileNative },
+    { id: 'open-folder', label: 'File: Open Folder...', run: openFolderNative },
     { id: 'save', label: 'File: Save', shortcut: 'Ctrl+S', run: saveActive },
+    { id: 'close-folder', label: 'File: Close Folder', run: closeFolder },
+    { id: 'toggle-autosave', label: 'File: Toggle Auto Save', run: () => { autoSave = !autoSave; notify(`Auto Save ${autoSave ? 'on' : 'off'}`); } },
+    { id: 'save-all', label: 'File: Save All', shortcut: 'Ctrl+Shift+S', run: saveAll },
     { id: 'close-editor', label: 'View: Close Editor', shortcut: 'Ctrl+W', run: () => active && closeFile(active.name) },
     { id: 'close-all', label: 'View: Close All Editors', run: closeAll },
     { id: 'undo', label: 'Edit: Undo', shortcut: 'Ctrl+Z', run: undoEdit },
@@ -614,34 +954,65 @@ function renderIde(container) {
     { id: 'toggle-minimap', label: 'View: Toggle Minimap', run: toggleMinimap },
     { id: 'new-terminal', label: 'Terminal: New Terminal', run: newTerminalSession },
     { id: 'clear-terminal', label: 'Terminal: Clear', run: clearTerminal },
-    { id: 'run-file', label: 'Terminal: Run Active File', run: () => active && runCommand(`node --check ${active.name}`) },
+    { id: 'run-file', label: 'Terminal: Run Active File', run: () => active && sendToTerminal(`node --check "${active.name}"\r`) },
   ];
   function runCommandById(id) {
     const command = COMMANDS.find((item) => item.id === id);
     if (command) command.run();
   }
+  let paletteMode = 'commands';
   function openCommandPalette() {
     closeAllMenus();
+    paletteMode = 'commands';
+    paletteInput.placeholder = 'Type a command...';
     paletteInput.value = '';
     renderPaletteList('');
     commandPalette.hidden = false;
     paletteInput.focus();
   }
-  function closeCommandPalette() { commandPalette.hidden = true; }
+  function closeCommandPalette() { if (pathResolver) { finishPath(null); return; } commandPalette.hidden = true; }
   function renderPaletteList(query) {
+    if (paletteMode === 'path') return;
     const q = query.toLowerCase();
+    if (paletteMode === 'files') {
+      const matches = files.filter((file) => file.name.toLowerCase().includes(q)).slice(0, 50);
+      paletteList.innerHTML = matches.length
+        ? matches.map((file, index) => {
+            const parts = file.name.split('/');
+            const dir = parts.slice(0, -1).join('/');
+            return `<button class="ide-command-item${index === 0 ? ' active' : ''}" data-file-pick="${ideEscape(file.name)}">${ideEscape(parts[parts.length - 1])}<span class="ide-command-shortcut">${ideEscape(dir)}</span></button>`;
+          }).join('')
+        : '<div class="ide-command-empty">No matching files</div>';
+      paletteList.querySelectorAll('[data-file-pick]').forEach((button) => button.addEventListener('click', () => { selectFile(button.dataset.filePick); closeCommandPalette(); }));
+      return;
+    }
     const matches = COMMANDS.filter((command) => command.label.toLowerCase().includes(q));
     paletteList.innerHTML = matches.length
       ? matches.map((command, index) => `<button class="ide-command-item${index === 0 ? ' active' : ''}" data-command-id="${command.id}">${ideEscape(command.label)}${command.shortcut ? `<span class="ide-command-shortcut">${ideEscape(command.shortcut)}</span>` : ''}</button>`).join('')
       : '<div class="ide-command-empty">No matching commands</div>';
     paletteList.querySelectorAll('[data-command-id]').forEach((button) => button.addEventListener('click', () => { runCommandById(button.dataset.commandId); closeCommandPalette(); }));
   }
+  function paletteItems() { return [...paletteList.querySelectorAll('.ide-command-item')]; }
+  function movePaletteSelection(delta) {
+    const items = paletteItems(); if (!items.length) return;
+    const current = Math.max(0, items.findIndex((item) => item.classList.contains('active')));
+    items[current].classList.remove('active');
+    const next = items[(current + delta + items.length) % items.length];
+    next.classList.add('active'); next.scrollIntoView({ block: 'nearest' });
+  }
   paletteInput.addEventListener('input', () => renderPaletteList(paletteInput.value));
   paletteInput.addEventListener('keydown', (event) => {
+    if (paletteMode === 'path') {
+      if (event.key === 'Enter') { event.preventDefault(); finishPath(paletteInput.value); }
+      if (event.key === 'Escape') finishPath(null);
+      return;
+    }
     if (event.key === 'Escape') { closeCommandPalette(); }
+    if (event.key === 'ArrowDown') { event.preventDefault(); movePaletteSelection(1); }
+    if (event.key === 'ArrowUp') { event.preventDefault(); movePaletteSelection(-1); }
     if (event.key === 'Enter') {
-      const first = paletteList.querySelector('[data-command-id]');
-      if (first) { runCommandById(first.dataset.commandId); closeCommandPalette(); }
+      const item = paletteItems().find((el) => el.classList.contains('active')) || paletteItems()[0];
+      if (item) item.click();
     }
   });
   document.addEventListener('click', (event) => { if (!commandPalette.hidden && !commandPalette.contains(event.target)) closeCommandPalette(); });
@@ -673,10 +1044,10 @@ function renderIde(container) {
     });
   });
 
-  container.querySelector('[data-action="focus"]').addEventListener('click', () => term && term.focus());
-  container.querySelector('[data-action="run"]').addEventListener('click', () => active && runCommand(`node --check ${active.name}`));
-  container.querySelector('[data-action="open-file"]').addEventListener('click', () => fileInput.click());
-  container.querySelector('[data-action="open-folder"]').addEventListener('click', () => folderInput.click());
+  container.querySelector('[data-action="focus"]')?.addEventListener('click', () => term && term.focus());
+  container.querySelector('[data-action="run"]').addEventListener('click', () => active && sendToTerminal(`node --check "${active.name}"\r`));
+  container.querySelector('[data-action="open-file"]').addEventListener('click', openFileNative);
+  container.querySelector('[data-action="open-folder"]').addEventListener('click', openFolderNative);
   container.querySelector('[data-action="new"]').addEventListener('click', newFile);
   fileInput.addEventListener('change', () => { importFiles([...fileInput.files]); fileInput.value = ''; });
   folderInput.addEventListener('change', () => { importFiles([...folderInput.files]); folderInput.value = ''; });
@@ -695,9 +1066,10 @@ function renderIde(container) {
     const mod = event.ctrlKey || event.metaKey;
     if (mod && event.shiftKey && key === 'p') { event.preventDefault(); openCommandPalette(); return; }
     if (mod && key === 'p') { event.preventDefault(); openQuickPick(); return; }
-    if (mod && key === 's') { event.preventDefault(); saveActive(); return; }
+    if (mod && key === 's') { event.preventDefault(); if (event.shiftKey) saveAll(); else saveActive(); return; }
+    if (mod && key === 'w') { event.preventDefault(); if (active) closeFile(active.name); return; }
     if (mod && key === 'n') { event.preventDefault(); newFile(); return; }
-    if (mod && key === 'o') { event.preventDefault(); fileInput.click(); return; }
+    if (mod && key === 'o') { event.preventDefault(); openFileNative(); return; }
     if (mod && key === 'b') { event.preventDefault(); toggleSidebar(); return; }
     if (mod && key === '`') { event.preventDefault(); toggleTerminal(); return; }
     if (mod && key === 'w') { event.preventDefault(); active && closeFile(active.name); return; }
@@ -707,8 +1079,7 @@ function renderIde(container) {
   files[1].open = true;
   buildFileTree();
   renderFiles();
-  loadMonaco();
-  initTerminal();
+  initTerminal().catch((error) => console.warn('[IDE] terminal init failed', error)).finally(loadMonaco);
 }
 
 ModAPI.registerTab({ id: 'ide', label: 'IDE', icon: 'terminal', render: renderIde });

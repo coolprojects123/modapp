@@ -1,8 +1,8 @@
 {
   "name": "modapp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A lightweight modular desktop app",
-  "homepage": "https://example.com/modapp",
+  "homepage": "https://github.com/coolprojects123/modapp/",
   "author": {
     "name": "modapp",
     "email": "hello@example.com"

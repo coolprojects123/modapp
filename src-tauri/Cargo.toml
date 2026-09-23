@@ -1,6 +1,6 @@
 [package]
 name = "modapp"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A moddable app."
 repository = "https://github.com/coolprojects123/modapp"
@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4"] }
 mlua = { version = "0.9", features = ["lua54", "vendored"] }
 tauri-plugin-opener = "2"
 tokio = "1.53.1"
+portable-pty = "0.9.0"
 
 # Only for reaching WebKitSettings (e.g. enable-encrypted-media) on the
 # mod-webview — the version here must resolve to the same one Tauri itself
