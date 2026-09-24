@@ -71,7 +71,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # ─────────────────────────────────────────────
-      # Rust dependency / build cache
+      # Rust cache
       # ─────────────────────────────────────────────
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
@@ -79,34 +79,33 @@ jobs:
           workspaces: src-tauri -> target
 
       # ─────────────────────────────────────────────
-      # Frontend dependencies
+      # Node dependencies
       # ─────────────────────────────────────────────
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Install dependencies
+        run: npm install
 
       # ─────────────────────────────────────────────
-      # Build + GitHub Release
+      # Build Tauri
       # ─────────────────────────────────────────────
-      - name: Build and Release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build Tauri
+        run: npm run tauri:build -- ${{ matrix.args }}
+
+      # ─────────────────────────────────────────────
+      # Create GitHub Release
+      # ─────────────────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'modapp "${{ github.ref_name }}"'
+          draft: true
+          prerelease: false
+
+          files: |
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.exe
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-        with:
-          # Example:
-          # v1.1.0 -> modapp "v1.1.0"
-          releaseName: 'modapp "${{ github.ref_name }}"'
-
-          # Release tag
-          tagName: ${{ github.ref_name }}
-
-          # Create as draft so you can review it first
-          releaseDraft: true
-
-          # Normal release, not prerelease
-          prerelease: false
-
-          # Linux: .deb + .rpm
-          # Windows: .msi + .exe
-          args: ${{ matrix.args }}
