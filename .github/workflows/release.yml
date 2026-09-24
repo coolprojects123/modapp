@@ -1,28 +1,22 @@
 name: Release
 
-# Builds modapp for Linux (.deb + .rpm) and Windows (.msi + .exe)
-# and attaches the results to a GitHub Release.
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: write
 
 jobs:
-  build:
-    permissions:
-      contents: write
-
+  release:
     strategy:
       fail-fast: false
+
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: "--bundles deb,rpm"
+            args: "--bundles appimage,deb,rpm"
 
           - platform: windows-latest
             args: "--bundles msi,nsis"
@@ -30,17 +24,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      # ─────────────────────────────────────────────
-      # Checkout
-      # ─────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ─────────────────────────────────────────────
-      # Linux build dependencies
-      # ─────────────────────────────────────────────
-      - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -48,64 +36,44 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly
+            xdg-utils
 
-      # ─────────────────────────────────────────────
-      # Node.js
-      # ─────────────────────────────────────────────
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
 
-      # ─────────────────────────────────────────────
-      # Rust
-      # ─────────────────────────────────────────────
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # ─────────────────────────────────────────────
-      # Rust cache
-      # ─────────────────────────────────────────────
-      - name: Cache Rust dependencies
+      - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: "./src-tauri -> target"
 
-      # ─────────────────────────────────────────────
-      # Node dependencies
-      # ─────────────────────────────────────────────
       - name: Install dependencies
         run: npm install
 
-      # ─────────────────────────────────────────────
-      # Build Tauri
-      # ─────────────────────────────────────────────
-      - name: Build Tauri
-        run: npm run tauri:build -- ${{ matrix.args }}
-
-      # ─────────────────────────────────────────────
-      # Create GitHub Release
-      # ─────────────────────────────────────────────
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: 'modapp "${{ github.ref_name }}"'
-          draft: true
-          prerelease: false
-
-          files: |
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+        with:
+          tauriScript: "npm run tauri:build"
+
+          args: ${{ matrix.args }}
+
+          tagName: "v__VERSION__"
+          releaseName: 'modapp "v__VERSION__"'
+
+          releaseBody: |
+            modapp __VERSION__
+
+            Download the installer for your platform from the assets below.
+
+          releaseDraft: true
+          prerelease: false
