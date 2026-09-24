@@ -253,6 +253,7 @@
   margin-top: 2px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -299,4 +300,96 @@ body.reduce-motion *::before,
 body.reduce-motion *::after {
   animation: none !important;
   transition: none !important;
+}
+
+/* ---------------- sections other mods add (ModAPI.registerSettingsSection) ---------------- */
+
+.settings-sidebar {
+  overflow-y: auto;
+}
+
+.settings-nav-item span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-group {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 12px 10px 4px;
+}
+
+.settings-subheading {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 18px 0 8px;
+}
+
+.settings-subheading:first-child { margin-top: 0; }
+
+.settings-note { margin: 8px 0; }
+
+.settings-field-wrap {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.settings-field-wrap:last-child { border-bottom: none; }
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-field-text { flex: 1; min-width: 0; }
+.settings-field-label { font-size: 13px; font-weight: 500; }
+
+.settings-field-desc {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.settings-field-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.settings-field-error:empty { display: none; }
+
+.settings-select,
+.settings-input {
+  flex-shrink: 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  max-width: 190px;
+}
+
+.settings-input[type="number"] { width: 90px; }
+
+.settings-select:focus-visible,
+.settings-input:focus-visible { outline: 1px solid var(--accent); }
+
+.settings-color {
+  flex-shrink: 0;
+  width: 44px;
+  height: 30px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  cursor: pointer;
 }

@@ -268,7 +268,11 @@
   // ---------------- tab activation ----------------
   async function activateTab(id) {
     activeTabId = id;
-    main.classList.toggle('full-bleed', id === 'music-player' || id === 'ide' || id === 'browser');
+    // Full-bleed is whatever the tab asked for at registration (or its
+    // overrider asked for) -- the shell keeps no list of mods.
+    const tabEntry = window.ModAPI._tabs.get(id);
+    const overrideOpts = window.ModAPI._overrideOptions.get(id);
+    main.classList.toggle('full-bleed', overrideOpts ? overrideOpts.fullBleed : !!(tabEntry && tabEntry.fullBleed));
     [...tabNav.children].forEach((btn) => btn.classList.toggle('active', btn.dataset.id === id));
 
     content.classList.add('fading');

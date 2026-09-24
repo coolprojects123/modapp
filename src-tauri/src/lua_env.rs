@@ -38,10 +38,21 @@ pub(crate) fn build_lua_env(
     mod_id: &str,
     permissions: &HashSet<String>,
 ) -> Result<Lua, String> {
-    // Empty stdlib: no io/os/package/debug baked in. A script can only ever
-    // reach what's explicitly installed below.
-    let lua = Lua::new_with(mlua::StdLib::NONE, mlua::LuaOptions::default())
-        .map_err(|error| error.to_string())?;
+    // STRING | TABLE | MATH only: no io/os/package/debug. Those three are
+    // pure data-manipulation libraries -- no filesystem, process, or network
+    // access lives in any of them -- so exposing them doesn't weaken the
+    // sandbox boundary that actually matters (io/os/package/debug staying
+    // out). Previously this was StdLib::NONE, which also silently took
+    // string/table/math away; that wasn't a deliberate restriction, just
+    // collateral from reaching for "NONE" as the safe default, and it meant
+    // no backend.lua script could do basic string work (see the
+    // decode_events comment in the calendar mod's backend.lua for what that
+    // broke in practice).
+    let lua = Lua::new_with(
+        mlua::StdLib::STRING | mlua::StdLib::TABLE | mlua::StdLib::MATH,
+        mlua::LuaOptions::default(),
+    )
+    .map_err(|error| error.to_string())?;
 
     if let Err(error) = lua.set_memory_limit(LUA_MEMORY_LIMIT_BYTES) {
         eprintln!("[mods] could not set Lua memory limit: {error}");
@@ -70,11 +81,27 @@ pub(crate) fn build_lua_env(
         // StdLib::NONE still leaves the base library, and dofile/loadfile in
         // it read arbitrary files off disk. Remove anything that touches the
         // filesystem or module loader (setting a missing global is harmless).
+        // Still relevant now that STRING/TABLE/MATH are loaded too -- none of
+        // those three reintroduce dofile/loadfile/require, but this stays as
+        // defense in depth in case that ever changes.
         for name in ["dofile", "loadfile", "require"] {
             globals
                 .set(name, mlua::Value::Nil)
                 .map_err(|error| error.to_string())?;
         }
+
+        // ---- IS_WINDOWS: shell.rs picks `cmd /C` vs `bash -c` per-platform
+        // (see run_shell_command), and the two shells quote arguments
+        // completely differently (cmd.exe doesn't strip single quotes the
+        // way a POSIX shell does). A script building a shell.run command
+        // that needs to quote an argument -- e.g. the calendar mod's
+        // fetch_calendar -- has no other way to know which quoting rules
+        // apply, since `os` isn't loaded in this sandbox. This is data, not
+        // a capability, so it's exposed unconditionally rather than gated
+        // behind a permission. ----
+        globals
+            .set("IS_WINDOWS", cfg!(windows))
+            .map_err(|error| error.to_string())?;
 
         // ---- ensure_dir: creates a directory and returns its full path. Relative
         // paths land in the mod's own data directory (always allowed); absolute
@@ -196,6 +223,45 @@ pub(crate) fn build_lua_env(
                 .map_err(|error| error.to_string())?;
         }
 
+        // ---- fetch_url: runs curl directly (no shell involved at all -- see
+        // shell.rs's run_argv and the long comment on run_shell_command for
+        // why that matters specifically on Windows). Narrower than
+        // shell.run: a mod that only needs to pull a URL doesn't need
+        // arbitrary command execution to do it. ----
+        if permissions.contains("net.fetch") {
+            let data_dir = mod_data_dir(app, mod_id)?;
+            let f = lua
+                .create_function(move |lua, url: String| {
+                    if !(url.starts_with("http://") || url.starts_with("https://")) {
+                        return Err(mlua::Error::RuntimeError(
+                            "fetch_url: url must be http(s)".into(),
+                        ));
+                    }
+                    std::fs::create_dir_all(&data_dir).map_err(mlua::Error::external)?;
+                    let (code, stdout, stderr, timed_out) = crate::shell::run_argv(
+                        "curl",
+                        &[
+                            "-fsSL".to_string(),
+                            "--max-time".to_string(),
+                            "20".to_string(),
+                            url,
+                        ],
+                        &data_dir,
+                    )
+                    .map_err(mlua::Error::external)?;
+                    let table = lua.create_table()?;
+                    table.set("code", code)?;
+                    table.set("stdout", String::from_utf8_lossy(&stdout).to_string())?;
+                    table.set("stderr", String::from_utf8_lossy(&stderr).to_string())?;
+                    table.set("timedOut", timed_out)?;
+                    Ok(table)
+                })
+                .map_err(|error| error.to_string())?;
+            globals
+                .set("fetch_url", f)
+                .map_err(|error| error.to_string())?;
+        }
+
         // ---- shell.run: arbitrary command execution. Powerful -- grant it
         // only to mods that genuinely need it. Runs without a login shell,
         // with a timeout and a cap on captured output. Defaults to the
@@ -242,6 +308,30 @@ pub(crate) fn build_lua_env(
                 .map_err(|error| error.to_string())?;
             globals
                 .set("run_shell", f)
+                .map_err(|error| error.to_string())?;
+        }
+
+        // ---- notify: OS notification. Global capability -- any mod can
+        // request notifications.send, not just the calendar mod. Rate
+        // limiting and length caps live in notifications::send_notification;
+        // this just forwards into it so backend.lua scripts (not only
+        // frontend JS via ModAPI.native) can trigger one too. ----
+        if permissions.contains("notifications.send") {
+            let app_handle = app.clone();
+            let owner = mod_id.to_string();
+            let f = lua
+                .create_function(move |_, (title, body): (String, Option<String>)| {
+                    crate::notifications::notify_from_backend(
+                        &app_handle,
+                        &owner,
+                        title,
+                        body.unwrap_or_default(),
+                    )
+                    .map_err(mlua::Error::RuntimeError)
+                })
+                .map_err(|error| error.to_string())?;
+            globals
+                .set("notify", f)
                 .map_err(|error| error.to_string())?;
         }
     }

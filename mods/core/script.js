@@ -149,7 +149,7 @@ async function renderGeneralSection(container) {
 let modsChanged = false;
 
 async function renderModsSection(container) {
-  container.innerHTML = '<p class="muted">Loading mods…</p>';
+  container.innerHTML = '<p class="muted">Loading modsâ¦</p>';
 
   try {
     const mods = await window.appAPI.listMods();
@@ -242,6 +242,8 @@ ModAPI.registerTab({
   render: renderHomePage,
 });
 
+let unsubscribeGoto = null;
+
 ModAPI.registerWidget({
   id: 'settings',
   label: 'Settings',
@@ -250,7 +252,7 @@ ModAPI.registerWidget({
   overlay: true,
   width: '520px',
 
-  mount(container) {
+  mount(container, close) {
     container.classList.add('settings-layout');
     container.innerHTML = `
       <div class="settings-sidebar"></div>
@@ -260,27 +262,55 @@ ModAPI.registerWidget({
     const sidebar = container.querySelector('.settings-sidebar');
     const content = container.querySelector('.settings-content');
 
-    for (const section of SETTINGS_SECTIONS) {
+    // Core's own sections first, then whatever other mods registered through
+    // ModAPI.registerSettingsSection: tab-bound ones under "Tabs", the rest
+    // under "More". Core doesn't know who they are.
+    const registered = typeof ModAPI.getSettingsSections === 'function' ? ModAPI.getSettingsSections() : [];
+    const entries = [
+      ...SETTINGS_SECTIONS.map((s) => ({
+        id: s.id, label: s.label, icon: s.icon, group: null,
+        render: (target) => s.render(target),
+      })),
+      ...registered.map((s) => ({
+        id: `x:${s.key || s.id}`, label: s.label, icon: s.icon, group: s.tab ? 'Tabs' : 'More', section: s,
+        render: (target) => ModAPI.renderSettingsSection(s, target, { close }),
+      })),
+    ];
+
+    let lastGroup = null;
+    for (const entry of entries) {
+      if (entry.group && entry.group !== lastGroup) {
+        const heading = document.createElement('div');
+        heading.className = 'settings-nav-group';
+        heading.textContent = entry.group;
+        sidebar.appendChild(heading);
+      }
+      lastGroup = entry.group;
+
       const item = document.createElement('button');
       item.className = 'settings-nav-item';
-      item.dataset.section = section.id;
+      item.dataset.section = entry.id;
+      item.title = entry.label;
 
       item.appendChild(
-        Icon(section.icon, { size: '17px' })
+        Icon(entry.icon, { size: '17px' })
       );
 
       const label = document.createElement('span');
-      label.textContent = section.label;
+      label.textContent = entry.label;
       item.appendChild(label);
 
       item.addEventListener('click', () => {
-        selectSection(section.id);
+        selectSection(entry.id);
       });
 
       sidebar.appendChild(item);
     }
 
     function selectSection(id) {
+      const entry = entries.find((e) => e.id === id);
+      if (!entry) return;
+
       sidebar
         .querySelectorAll('.settings-nav-item')
         .forEach((el) => {
@@ -290,19 +320,37 @@ ModAPI.registerWidget({
           );
         });
 
-      const section = SETTINGS_SECTIONS.find(
-        (s) => s.id === id
-      );
+      // A fresh pane per selection: sections render asynchronously, so a slow
+      // one (General) must not paint over the section picked after it.
+      const pane = document.createElement('div');
+      content.replaceChildren(pane);
+      entry.render(pane);
+    }
 
-      if (section) {
-        section.render(content);
-      }
+    // A section id, a tab id or a mod id, as passed to ModAPI.openSettings().
+    function resolveTarget(target) {
+      if (!target) return null;
+      const found =
+        entries.find((e) => e.section && e.section.tab === target) ||
+        entries.find((e) => e.id === target || (e.section && (e.section.id === target || e.section.source === target)));
+      return found ? found.id : null;
+    }
+
+    if (typeof ModAPI.onSettingsGoto === 'function') {
+      unsubscribeGoto = ModAPI.onSettingsGoto((target) => {
+        const id = resolveTarget(target);
+        if (id) selectSection(id);
+      });
     }
 
     selectSection('general');
   },
 
   onClose() {
+    if (unsubscribeGoto) {
+      unsubscribeGoto();
+      unsubscribeGoto = null;
+    }
     if (modsChanged) {
       modsChanged = false;
       window.location.reload();

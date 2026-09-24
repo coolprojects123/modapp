@@ -194,8 +194,8 @@ a { color: var(--accent); }
 /* Created in site.js for each tab; had no styling of its own before, which
    is exactly why a definite height never reached mods relying on height:
    100% or flex:1 (e.g. an embedded webview's viewport) — only full-bleed
-   tabs (browser, music-player, ide) get flex:1 here, since non-full-bleed
-   tabs (home, etc.) should keep their natural content height. */
+   tabs (those that registered with fullBleed: true) get flex:1 here, since
+   other tabs should keep their natural content height. */
 .tab-view {
   display: flex;
   flex-direction: column;

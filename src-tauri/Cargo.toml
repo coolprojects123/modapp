@@ -22,6 +22,9 @@ tauri-plugin-updater = "2"
 # Native confirmation dialog shown before an update is installed (Rust-side only;
 # deliberately NOT exposed to JS via a capability).
 tauri-plugin-dialog = "2"
+# OS notifications, exposed to mods as the global `notifications.send`
+# permission (see notifications.rs) -- not calendar-specific.
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }

@@ -22,6 +22,7 @@ const modAPIImpl = (function () {
   const tabs = new Map();          // id -> { id, label, icon, render, source }
   const widgets = new Map();       // id -> { id, label, icon, mount, source }
   const overrides = new Map();     // id -> render fn
+  const overrideOptions = new Map(); // id -> { fullBleed } (only what the overriding mod asked for)
   const activateHooks = new Map(); // id -> [fn, fn, ...]
   let identity = { title: 'modapp', icon: 'M' };
   let modAssetBase = null;
@@ -103,13 +104,17 @@ const modAPIImpl = (function () {
       },
     },
 
-    // Adds a brand new tab. render(container) is called each time it's opened.
-    registerTab({ id, label, icon, render }) {
+    // Adds a brand new tab. render(container) is called once, the first time
+    // the tab is opened; after that the same view is just shown and hidden.
+    //   fullBleed: true -> the tab gets the whole content area (no padding, no
+    //                      max-width, fills the height). The shell has no idea
+    //                      which tabs want that; a tab has to ask.
+    registerTab({ id, label, icon, render, fullBleed }) {
       if (!id || typeof render !== 'function') {
         console.warn('[ModAPI] registerTab requires an id and a render(container) function');
         return;
       }
-      tabs.set(id, { id, label: label || id, icon: icon || '\u{1F9E9}', render, source: modId });
+      tabs.set(id, { id, label: label || id, icon: icon || '\u{1F9E9}', render, fullBleed: !!fullBleed, source: modId });
       document.dispatchEvent(new CustomEvent('mods:tabs-changed'));
     },
 
@@ -146,12 +151,15 @@ const modAPIImpl = (function () {
     },
 
     // Fully replaces how an existing tab (core or another mod's) renders.
-    overrideTab(id, render) {
+    // options.fullBleed, if given, replaces the tab's own fullBleed setting.
+    overrideTab(id, render, options = {}) {
       if (typeof render !== 'function') {
         console.warn('[ModAPI] overrideTab requires a render(container) function');
         return;
       }
       overrides.set(id, render);
+      if (options && typeof options.fullBleed === 'boolean') overrideOptions.set(id, { fullBleed: options.fullBleed });
+      else overrideOptions.delete(id);
     },
 
     // Fires every time the given tab activates, after it renders — for
@@ -165,6 +173,7 @@ const modAPIImpl = (function () {
     _tabs: tabs,
     _widgets: widgets,
     _overrides: overrides,
+    _overrideOptions: overrideOptions,
     _activateHooks: activateHooks,
   };
 })();

@@ -149,31 +149,11 @@
     updates,
     webview,
     
-    // Legacy callBackend for backwards compatibility
-    // This will be removed in future versions
-    callBackend: async (modId, functionName, args = []) => {
-      // Route to the appropriate API based on modId and functionName
-      if (modId === 'core') {
-        if (functionName === 'read_settings') {
-          return JSON.stringify(await settings.read());
-        }
-        if (functionName === 'write_settings') {
-          await settings.write(JSON.parse(args[0]));
-          return JSON.stringify(await settings.read());
-        }
-        if (functionName === 'toggle_mod') {
-          return await mods.toggle(args[0]);
-        }
-      }
-      if (modId === 'music-player' && functionName === 'ensure_uploads_dir') {
-        await fs.ensureDir('music-uploads');
-        return 'music-uploads';
-      }
-      if (modId === 'ide' && functionName === 'run_command') {
-        const result = await shell.run(args[0], args[1]);
-        return result;
-      }
-      throw new Error(`Unknown backend call: ${modId}.${functionName}`);
+    // Placeholder until a desktop backend replaces it (setupTauriAPI, or the
+    // Electron branch). It does not route by mod id: a mod's backend is
+    // reached only through the real bridge.
+    callBackend: async () => {
+      throw new Error('Native APIs are available in the desktop build only.');
     },
   };
 

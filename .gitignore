@@ -50,5 +50,8 @@ Dockerfile
 # Keys
 src-tauri/~/.tauri/modapp.key
 
+# Clean script
+clean.bat
+
 # Random txt files
 secrets.txt

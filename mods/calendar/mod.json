@@ -1,0 +1,10 @@
+{
+  "name": "Calendar",
+  "icon": "calendar_month",
+  "description": "Month/Week/Day/Agenda calendar with ICS sync.",
+  "enabledByDefault": true,
+  "permissions": ["net.fetch", "notifications.send"],
+  "apis": [],
+  "styles": ["css/calendar.css"],
+  "scripts": ["js/ics-parser.js", "js/tab.js", "js/settings.js"]
+}

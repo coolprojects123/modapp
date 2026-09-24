@@ -1,8 +1,8 @@
 //! System command: the one bridge every mod's backend.lua calls through.
 //! Everything a mod is allowed to do natively is a host function installed
 //! here, gated by that mod's own declared permissions -- settings, mod
-//! toggling, shell access, filesystem access are ALL just permissions now,
-//! none of them get their own dedicated command.
+//! toggling, shell access, filesystem access, notifications are ALL just
+//! permissions now, none of them get their own dedicated command.
 
 use crate::lua_env::build_lua_env;
 use crate::paths::mods_dir;
@@ -21,6 +21,7 @@ pub(crate) const HOST_FUNCTIONS: &[&str] = &[
     "settings_write",
     "mods_toggle",
     "run_shell",
+    "notify",
 ];
 
 // Async + spawn_blocking: sync commands run on the main thread, so a slow

@@ -3,24 +3,26 @@
 // mobile targets call modapp_lib::run() from their own platform entry point
 // instead of a traditional main().
 //
-//   paths        mod / data directory locations and path-safety rules
-//   storage      JSON files, directory copy, size + quota limits
-//   permissions  mod manifests, enabled state, permission checks
-//   mods         mod discovery (list_mods)
-//   fs_api       filesystem commands (fs.* permissions)
-//   webview      embedded mod webviews (webview.access)
-//   shell        one-shot command execution (shell.run)
-//   dialog       native file / folder pickers (dialog.pick)
-//   pty          interactive terminals (pty.access)
-//   lua_env      sandboxed Lua host functions for backend.lua
-//   backend      call_mod_backend, the bridge into backend.lua
-//   updater      app updates
+//   paths          mod / data directory locations and path-safety rules
+//   storage        JSON files, directory copy, size + quota limits
+//   permissions    mod manifests, enabled state, permission checks
+//   mods           mod discovery (list_mods)
+//   fs_api         filesystem commands (fs.* permissions)
+//   webview        embedded mod webviews (webview.access)
+//   shell          one-shot command execution (shell.run)
+//   dialog         native file / folder pickers (dialog.pick)
+//   pty            interactive terminals (pty.access)
+//   notifications  OS notifications (notifications.send) -- global, any mod
+//   lua_env        sandboxed Lua host functions for backend.lua
+//   backend        call_mod_backend, the bridge into backend.lua
+//   updater        app updates
 
 mod backend;
 mod dialog;
 mod fs_api;
 mod lua_env;
 mod mods;
+mod notifications;
 mod paths;
 mod permissions;
 mod pty;
@@ -36,9 +38,11 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .manage(pty::PtyState::default())
+        .manage(notifications::NotificationRateState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let target = paths::mods_dir(app.handle()).map_err(std::io::Error::other)?;
             let bundled = app
@@ -83,6 +87,7 @@ pub fn run() {
             dialog::pick_folder,
             dialog::pick_files,
             dialog::pick_save_file,
+            notifications::send_notification,
             pty::pty_list_shells,
             pty::pty_spawn,
             pty::pty_write,
