@@ -922,7 +922,7 @@
       MANUAL_CAL.color = prefs.manualColor || MANUAL_CAL.color;
       let view = VIEWS.some((v) => v.id === prefs.view) ? prefs.view : 'month';
       const hidden = new Set(prefs.hidden || []);
-      const persist = () => savePrefs({ view, hidden: [...hidden], collapsed: container.classList.contains('calx-tab--collapsed') });
+      const persist = () => savePrefs({ ...prefs, view, hidden: [...hidden], collapsed: container.classList.contains('calx-tab--collapsed') });
 
       let refDate = todayDate();
       let miniAnchor = refDate;

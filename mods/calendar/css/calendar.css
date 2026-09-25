@@ -815,7 +815,6 @@
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 3;
-  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
 }
@@ -1226,39 +1225,75 @@
     transition: none !important;
   }
 }
-/* ===== calendar's own Settings section (Settings > Tabs > Calendar) ===== */
+
+/* ===== calendar's own Settings section (Settings > Calendar) ===== */
 
 .calx-settings-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
-.calx-settings-row {
+.calx-settings-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
 }
 
-.calx-settings-name {
+.calx-settings-dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--dot, #888);
+}
+
+.calx-settings-info {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-span.calx-settings-name {
+.calx-settings-name-text {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+input.calx-settings-name-input {
+  width: 100%;
+  max-width: 220px;
+  font-weight: 600;
+}
+
+.calx-settings-sub {
+  font-size: 11px;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-input.calx-settings-name {
-  max-width: 160px;
+.calx-settings-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.calx-settings-colors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .calx-settings-swatches {
-  flex: 0 0 auto;
   display: flex;
   gap: 6px;
 }
@@ -1270,14 +1305,43 @@ button.calx-settings-swatch {
   border-radius: 50%;
   border: 2px solid transparent;
   background: var(--c);
-  box-shadow: inset 0 0 0 2px var(--bg, #1e1e1e);
+  box-shadow: inset 0 0 0 2px var(--panel-2);
   cursor: pointer;
 }
 
 button.calx-settings-swatch:hover {
-  border-color: rgba(127, 127, 127, 0.5);
+  filter: brightness(1.1);
 }
 
 button.calx-settings-swatch--on {
   border-color: var(--c);
+}
+
+input.calx-settings-custom-color {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+button.calx-settings-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+button.calx-settings-remove:hover {
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
 }

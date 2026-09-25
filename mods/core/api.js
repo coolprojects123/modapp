@@ -38,6 +38,7 @@ window.appAPI = {
       defaultTab: 'home',
       accentColor: '#3b82f6',
       reduceMotion: false,
+      themeVars: {},
     };
   },
   
