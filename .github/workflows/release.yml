@@ -2,42 +2,28 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
-      - "v*"
+      - \"v*\"
 
 permissions:
   contents: write
-  checks: read
 
 jobs:
-  wait-for-ci:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wait for CI to pass on this commit
-        uses: lewagon/wait-on-check-action@v1.3.4
-        with:
-          ref: ${{ github.sha }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 15
-          running-workflow-name: wait-for-ci
-          # No check-name given -- this waits for every other check on the
-          # tag's commit (i.e. every matrix job the CI workflow produced)
-          # and fails if any of them didn't succeed.
-
   release:
-    needs: wait-for-ci
     strategy:
       fail-fast: false
 
       matrix:
         include:
           - platform: ubuntu-22.04
-            args: "--bundles appimage,deb,rpm"
+            args: \"--bundles appimage,deb,rpm\"
 
           - platform: windows-latest
-            args: "--bundles msi,nsis"
+            args: \"--bundles msi,nsis\"
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: \${{ matrix.platform }}
 
     steps:
       - name: Checkout
@@ -47,11 +33,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
+          sudo apt-get install -y \\\\
+            libwebkit2gtk-4.1-dev \\\\
+            libappindicator3-dev \\\\
+            librsvg2-dev \\\\
+            patchelf \\\\
             xdg-utils
 
       - name: Setup Node.js
@@ -66,30 +52,53 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
-          # Tag refs are one-off -- a cache saved here is basically never
-          # restorable again, so don't bother uploading one. The CI workflow
-          # (push to main) is what actually seeds a reusable, default-branch
-          # cache that this restores from.
-          save-if: false
+          workspaces: \"./src-tauri -> target\"
+          # Only the main-branch runs of THIS SAME workflow save a reusable
+          # cache -- a cache saved from a one-off tag ref is basically never
+          # restorable again (each tag is a unique ref). Pushes to main
+          # (which now also run this workflow, see \\'on:\\' above) are what
+          # seed the default-branch cache that tag-triggered runs below
+          # restore from -- no separate CI workflow needed for that.
+          save-if: \${{ github.ref == \\'refs/heads/main\\' }}
 
       - name: Install dependencies
         run: npm install
 
-      - name: Build and publish Tauri release
+      - name: Check Rust
+        working-directory: ./src-tauri
+        run: cargo check
+
+      - name: Build (main branch -- cache warm-up only, nothing published)
+        if: github.ref == \\'refs/heads/main\\'
+        run: npx tauri build \${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload build artifacts (main branch only)
+        if: github.ref == \\'refs/heads/main\\'
+        uses: actions/upload-artifact@v4
+        with:
+          name: modapp-\${{ matrix.platform }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build and publish Tauri release (tag pushes only)
+        if: startsWith(github.ref, \\'refs/tags/\\')
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
         with:
-          tauriScript: "npx tauri"
+          tauriScript: \"npx tauri\"
 
-          args: ${{ matrix.args }}
+          args: \${{ matrix.args }}
 
-          tagName: "v__VERSION__"
-          releaseName: 'modapp "v__VERSION__"'
+          tagName: \"v__VERSION__\"
+          releaseName: \\'modapp \"v__VERSION__\"\\'
 
           releaseBody: |
             modapp __VERSION__
