@@ -1,6 +1,6 @@
 [package]
 name = "modapp"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "A moddable app."
 repository = "https://github.com/coolprojects123/modapp"

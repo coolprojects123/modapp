@@ -51,6 +51,11 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          # Tag refs are one-off -- a cache saved here is basically never
+          # restorable again, so don't bother uploading one. The CI workflow
+          # (push to main) is what actually seeds a reusable, default-branch
+          # cache that this restores from.
+          save-if: false
 
       - name: Install dependencies
         run: npm install
