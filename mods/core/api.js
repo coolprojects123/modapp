@@ -73,4 +73,24 @@ window.appAPI = {
       [id]
     );
   },
+
+  /**
+   * Lightweight check: is a new version available? Does not download or
+   * install anything.
+   * @returns {Promise<{available: boolean, configured?: boolean, version?: string, currentVersion?: string, body?: string, date?: string}>}
+   */
+  async checkForUpdates() {
+    return await window.__TAURI__.core.invoke('check_for_updates');
+  },
+
+  /**
+   * Re-checks, then (if one is available) shows the native OS confirmation
+   * dialog and installs on accept. The dialog is native Rust-side UI a mod's
+   * script can't click through, so this is safe to call without any of our
+   * own confirmation UI first.
+   * @returns {Promise<{installed: boolean, available: boolean, declined?: boolean, version?: string}>}
+   */
+  async installUpdate() {
+    return await window.__TAURI__.core.invoke('install_update');
+  },
 };

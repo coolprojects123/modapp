@@ -55,3 +55,4 @@ clean.bat
 
 # Random txt files
 secrets.txt
+remove-symlinks.ps1

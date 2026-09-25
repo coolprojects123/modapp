@@ -115,6 +115,7 @@ function applySettingsToShell(settings) {
 const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General', icon: 'tune', width: '480px', height: '520px', render: renderGeneralSection },
   { id: 'mods', label: 'Mods', icon: 'extension', width: '480px', height: '440px', render: renderModsSection },
+  { id: 'updates', label: 'Updates', icon: 'update', width: '480px', height: '260px', render: renderUpdatesSection },
 ];
 
 // Every CSS var the shell exposes for theming (colors only -- fonts are a
@@ -307,6 +308,71 @@ async function renderGeneralSection(container) {
 
 let modsChanged = false;
 
+async function renderUpdatesSection(container) {
+  container.innerHTML = `
+    <div class="settings-section-title">Updates</div>
+    <p class="muted update-status">Checking for updates\u2026</p>
+    <button type="button" class="theme-reset-btn update-action-btn" style="display:none;"></button>
+  `;
+
+  const status = container.querySelector('.update-status');
+  const actionBtn = container.querySelector('.update-action-btn');
+
+  async function check() {
+    status.textContent = 'Checking for updates\u2026';
+    actionBtn.style.display = 'none';
+
+    let result;
+    try {
+      result = await window.appAPI.checkForUpdates();
+    } catch (error) {
+      status.textContent = `Couldn't check for updates: ${error}`;
+      return;
+    }
+
+    if (result.configured === false) {
+      status.textContent = 'Updates aren\u2019t configured for this build.';
+      return;
+    }
+
+    if (!result.available) {
+      status.textContent = 'You\u2019re up to date.';
+      actionBtn.textContent = 'Check again';
+      actionBtn.style.display = '';
+      actionBtn.onclick = check;
+      return;
+    }
+
+    status.textContent = `Version ${result.version} is available (you have ${result.currentVersion}).`;
+    actionBtn.textContent = 'Install update\u2026';
+    actionBtn.style.display = '';
+    actionBtn.onclick = install;
+  }
+
+  async function install() {
+    actionBtn.disabled = true;
+    status.textContent = 'Waiting for confirmation\u2026';
+    try {
+      const result = await window.appAPI.installUpdate();
+      if (result.declined) {
+        status.textContent = 'Update available \u2014 install whenever you\u2019re ready.';
+      } else if (result.installed) {
+        status.textContent = `Version ${result.version} installed \u2014 restart to finish.`;
+        actionBtn.style.display = 'none';
+      } else {
+        status.textContent = 'You\u2019re up to date.';
+        actionBtn.style.display = 'none';
+      }
+    } catch (error) {
+      status.textContent = `Update failed: ${error}`;
+    } finally {
+      actionBtn.disabled = false;
+    }
+  }
+
+  check();
+}
+
 async function renderModsSection(container) {
   container.innerHTML = '<p class="muted">Loading mods…</p>';
 
@@ -496,4 +562,21 @@ document.addEventListener('mods:ready', async () => {
     const btn = document.querySelector(`.tab[data-id="${s.defaultTab}"]`);
     if (btn) btn.click();
   }
+  checkForUpdatesOnStartup();
 });
+
+// Nothing else in the app ever called check_for_updates/install_update, so
+// the updater was fully configured on the backend but never actually ran.
+// install_update re-checks and shows a native confirm dialog itself before
+// downloading anything, so there's no need for our own UI here -- just ask.
+async function checkForUpdatesOnStartup() {
+  if (!window.appAPI?.checkForUpdates) return;
+  try {
+    const result = await window.appAPI.checkForUpdates();
+    if (result?.available) {
+      await window.appAPI.installUpdate();
+    }
+  } catch (error) {
+    console.error('Update check failed:', error);
+  }
+}
