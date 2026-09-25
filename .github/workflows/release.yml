@@ -7,9 +7,25 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 jobs:
+  wait-for-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI to pass on this commit
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 15
+          running-workflow-name: wait-for-ci
+          # No check-name given -- this waits for every other check on the
+          # tag's commit (i.e. every matrix job the CI workflow produced)
+          # and fails if any of them didn't succeed.
+
   release:
+    needs: wait-for-ci
     strategy:
       fail-fast: false
 
