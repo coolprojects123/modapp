@@ -1,6 +1,6 @@
 {
   "name": "modapp",
-  "version": "1.2.1",
+  "version": "2.0.0",
   "description": "A lightweight modular desktop app",
   "homepage": "https://github.com/coolprojects123/modapp/",
   "author": {
@@ -28,7 +28,7 @@
     "electron-builder": "^26.15.3"
   },
   "allowScripts": {
-    "electron@43.3.0": true,
+    "electron@44.1.0": true,
     "electron-builder@26.15.3": true,
     "electron-winstaller": true,
     "node-pty@1.1.0": true
@@ -36,6 +36,10 @@
   "build": {
     "appId": "com.modapp.desktop",
     "productName": "modapp",
+    "afterSign": "build/evs-sign.js",
+    "electronDownload": {
+      "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
+    },
     "directories": {
       "output": "dist-electron"
     },
