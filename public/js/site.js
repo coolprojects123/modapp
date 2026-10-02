@@ -31,16 +31,21 @@
 
   let activeTabId = null;
   const openWidgets = new Map();
-  const tabViews = new Map();
+  const tabViews = new Map();   // id -> view element
+  const viewReady = new Map();  // id -> promise (render + activate hooks finished)
+  let activationToken = 0;      // bumped on every tab click; only the latest may touch the display
 
-  // A native mod webview (browser tab, streaming service, etc.) is a
-  // separate OS-composited surface -- it always paints on top of regular
-  // DOM content, including a translucent overlay modal like Settings, no
-  // matter what z-index says. There's no CSS fix for that, so instead we
-  // tell mods when an overlay widget opens/closes and let them hide/show
-  // their own native webview in response. Counted (not boolean) in case
-  // more than one overlay widget is ever open at once.
+  // Electron <webview> elements are contained by their host and can layer
+  // with CSS, but overlays still hide them to avoid showing content through
+  // translucent panels. Counted in case multiple overlays are open.
   let openOverlayCount = 0;
+
+  // Inactive tab views are hidden by a stylesheet rule with !important, so a
+  // mod that sets `style.display` on its own container (or has CSS like
+  // `.my-tab { display: flex }`) can't leave itself visible behind another tab.
+  const shellStyle = document.createElement('style');
+  shellStyle.textContent = '.tab-view:not(.is-active) { display: none !important; }';
+  document.head.appendChild(shellStyle);
 
   // ---------------- bare shell ----------------
   const app = document.getElementById('app');
@@ -266,27 +271,19 @@
   }
 
   // ---------------- tab activation ----------------
-  async function activateTab(id) {
-    activeTabId = id;
-    // Full-bleed is whatever the tab asked for at registration (or its
-    // overrider asked for) -- the shell keeps no list of mods.
-    const tabEntry = window.ModAPI._tabs.get(id);
-    const overrideOpts = window.ModAPI._overrideOptions.get(id);
-    main.classList.toggle('full-bleed', overrideOpts ? overrideOpts.fullBleed : !!(tabEntry && tabEntry.fullBleed));
-    [...tabNav.children].forEach((btn) => btn.classList.toggle('active', btn.dataset.id === id));
+  // Creates the tab's view once and runs render + activate hooks once. The
+  // promise is cached, so a superseded activation still lets the render finish
+  // in the background and the tab is ready the next time it's opened.
+  function ensureView(id) {
+    if (viewReady.has(id)) return viewReady.get(id);
 
-    content.classList.add('fading');
-    await new Promise((r) => setTimeout(r, 90));
+    const view = document.createElement('div');
+    view.className = 'tab-view';
+    view.dataset.tabId = id;
+    content.appendChild(view);
+    tabViews.set(id, view);
 
-    let view = tabViews.get(id);
-    if (!view) {
-      view = document.createElement('div');
-      view.className = 'tab-view';
-      view.dataset.tabId = id;
-      view.style.display = 'none';
-      content.appendChild(view);
-      tabViews.set(id, view);
-
+    const ready = (async () => {
       const override = window.ModAPI._overrides.get(id);
       const modTab = window.ModAPI._tabs.get(id);
       try {
@@ -303,9 +300,31 @@
       for (const hook of hooks) {
         try { hook(view); } catch (err) { console.error('[mods] activate hook failed:', err); }
       }
-    }
+    })();
 
-    for (const [tabId, tabView] of tabViews) tabView.style.display = tabId === id ? '' : 'none';
+    viewReady.set(id, ready);
+    return ready;
+  }
+
+  async function activateTab(id) {
+    const token = ++activationToken;
+    activeTabId = id;
+
+    // Full-bleed is whatever the tab asked for at registration (or its
+    // overrider asked for) -- the shell keeps no list of mods.
+    const tabEntry = window.ModAPI._tabs.get(id);
+    const overrideOpts = window.ModAPI._overrideOptions.get(id);
+    main.classList.toggle('full-bleed', overrideOpts ? overrideOpts.fullBleed : !!(tabEntry && tabEntry.fullBleed));
+    [...tabNav.children].forEach((btn) => btn.classList.toggle('active', btn.dataset.id === id));
+
+    content.classList.add('fading');
+    await new Promise((r) => setTimeout(r, 90));
+    if (token !== activationToken) return; // a newer click owns the display
+
+    await ensureView(id);
+    if (token !== activationToken) return; // superseded while rendering
+
+    for (const [tabId, tabView] of tabViews) tabView.classList.toggle('is-active', tabId === id);
 
     content.classList.remove('fading');
   }

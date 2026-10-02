@@ -3,9 +3,8 @@ node_modules/
 .npm/
 .pnpm-store/
 
-# Tauri / Rust
-src-tauri/target/
-src-tauri/.cargo/
+# Native build artifacts
+dist-electron/
 
 # Build artifacts
 /dist/
@@ -46,9 +45,6 @@ Thumbs.db
 
 # Docker
 Dockerfile
-
-# Keys
-src-tauri/~/.tauri/modapp.key
 
 # Clean script
 clean.bat

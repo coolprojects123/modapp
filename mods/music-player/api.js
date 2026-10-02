@@ -7,33 +7,13 @@ ModAPI.music = {
     if (window.nativeAPIReady) await window.nativeAPIReady;
     const native = window.nativeAPI || ModAPI.native;
     if (native?.fs?.forMod) return native.fs.forMod('music-player');
-
-    if (typeof window.__TAURI_INVOKE__ === 'function') {
-      const invoke = window.__TAURI_INVOKE__;
-      const payload = (extra = {}) => ({ modId: 'music-player', ...extra });
-      return {
-        ensureDir: (path) => invoke('system_ensure_dir', payload({ path })),
-        readFile: (path) => invoke('system_read_file', payload({ path })),
-        writeFile: (path, content) => invoke('system_write_file', payload({ path, content })),
-        readBytes: async (path) => new Uint8Array(await invoke('system_read_bytes', payload({ path }))),
-        writeBytes: (path, bytes) => invoke('system_write_bytes', payload({ path, content: Array.from(bytes) })),
-        readDir: (path = '') => invoke('system_read_dir', payload({ path })),
-        resolvePath: (path) => invoke('system_resolve_path', payload({ path })),
-        move: (from, to) => invoke('system_move', payload({ from, to })),
-        removeFile: (path) => invoke('system_remove_file', payload({ path })),
-      };
-    }
-
     return native?.fs
   },
 
   async getFileUrl(filePath) {
     const fs = await this.getFilesystem();
-    if (!fs?.resolvePath) throw new Error('Native file URL API not available');
-    const path = await fs.resolvePath(filePath);
-    const convert = window.nativeAPI?.convertFileSrc || ((value) =>
-      `asset://localhost/${encodeURIComponent(value)}`);
-    return convert(path);
+    if (!fs?.toFileUrl) throw new Error('Native file URL API not available');
+    return fs.toFileUrl(filePath);
   },
 
   /**
@@ -44,12 +24,6 @@ ModAPI.music = {
     const fs = await this.getFilesystem();
     if (fs?.ensureDir) {
       return await fs.ensureDir('music-uploads');
-    }
-
-    // Fallback to old callBackend system for backwards compatibility
-    // Now using core's ensure_uploads_dir as the new FS API
-    if (window.appAPI?.callBackend) {
-      return await ModAPI.native.callBackend('core', 'ensure_uploads_dir', ['music-uploads']);
     }
 
     // Browser mode - return empty (no FS access)

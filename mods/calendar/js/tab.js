@@ -15,7 +15,7 @@
  * prompt() is unreliable in native webviews). Sources, manual events and
  * prefs persist via native fs; each source's last good copy is cached so
  * the tab still works offline. webcal:// URLs are rewritten to https://
- * before fetch; backend.lua does the shell quoting.
+ * before fetching through the permission-gated native network API.
  *
  * Shortcuts: T today, M/W/D/A views, ←/→ prev/next, C create.
  */
@@ -184,7 +184,9 @@
   async function fetchSourceText(source) {
     const url = normalizeUrl(source.url);
     validateUrl(url);
-    const text = await window.ModAPI.native.callBackend(MOD_ID, 'fetch_calendar', [url]);
+    const result = await window.ModAPI.native.net.fetch(MOD_ID, url);
+    if (result.code !== 0) throw new Error(`Calendar fetch failed (${result.code}): ${result.stderr}`);
+    const text = result.stdout;
     await assertFs().writeFile(`cache-${source.id}.ics`, text);
     return text;
   }
@@ -205,11 +207,10 @@
       return delta >= 0 && delta <= REMINDER_WINDOW_MS;
     });
     if (!due.length) return;
-    const payload = JSON.stringify(due.map((e) => ({ title: e.title, when: e.start.toLocaleTimeString() })));
     try {
-      // backend.lua's decode_events() still errors on this; wired up so
-      // reminders work the moment that lands.
-      await window.ModAPI.native.callBackend(MOD_ID, 'check_reminders', [payload]);
+      for (const event of due) {
+        await window.ModAPI.native.notifications.send(MOD_ID, event.title, event.start.toLocaleTimeString());
+      }
     } catch (err) {
       console.warn('[calendar] reminder failed:', err);
     }

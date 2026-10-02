@@ -1,8 +1,9 @@
 .browser-tab {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
 }
 
 .browser-toolbar {
@@ -82,11 +83,12 @@
 }
 
 .browser-viewport {
-  flex: 1 1 auto;
-  min-height: 0;
-  position: relative;
-  /* The native webview is drawn by the OS on top of this element's screen
-     rect — this stays empty (transparent) in the DOM itself. */
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  position: relative !important;
+  display: block !important;
+  /* The Electron <webview> fills this contained host element. */
 }
 
 .browser-status {

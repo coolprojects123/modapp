@@ -5,19 +5,17 @@
 .DESCRIPTION
   modapp loads mods from disk in its app-data directory, not from the
   build output, so during dev you need your local `mods\` folder synced
-  into %APPDATA%\<tauri-identifier>\mods every time you change a mod.
+    into Electron's %APPDATA%\modapp\mods directory while developing.
 
-  This script finds your Tauri app's identifier from tauri.conf.json
-  (searched near the script / current directory) to build the AppData
-  path automatically. Override with -Destination if it guesses wrong.
+    Override -Destination if Electron uses a different userData path.
 
 .PARAMETER Source
   Path to your dev mods folder. Defaults to ".\mods" relative to the
   current directory.
 
 .PARAMETER Destination
-  Path to the mods folder inside AppData. If omitted, the script tries
-  to detect it from tauri.conf.json's "identifier" field.
+    Path to the mods folder inside AppData. If omitted, defaults to
+    %APPDATA%\modapp\mods.
 
 .PARAMETER Watch
   If set, keeps running and re-syncs automatically whenever a file
@@ -32,8 +30,8 @@
   Copies once, then keeps watching and re-syncing on every change.
 
 .EXAMPLE
-  .\sync-mods.ps1 -Source "C:\dev\modapp\mods" -Destination "C:\Users\me\AppData\Roaming\com.modapp.app\mods"
-  Explicit paths, skipping auto-detection.
+    .\sync-mods.ps1 -Source "C:\dev\modapp\mods" -Destination "C:\Users\me\AppData\Roaming\modapp\mods"
+    Explicit paths.
 #>
 
 param(
@@ -41,28 +39,6 @@ param(
     [string]$Destination,
     [switch]$Watch
 )
-
-function Find-TauriIdentifier {
-    # Look for tauri.conf.json in common spots relative to cwd / script dir.
-    $candidates = @(
-        ".\src-tauri\tauri.conf.json",
-        "..\src-tauri\tauri.conf.json",
-        (Join-Path $PSScriptRoot "src-tauri\tauri.conf.json"),
-        (Join-Path $PSScriptRoot "..\src-tauri\tauri.conf.json")
-    )
-
-    foreach ($path in $candidates) {
-        if (Test-Path $path) {
-            try {
-                $json = Get-Content $path -Raw | ConvertFrom-Json
-                if ($json.identifier) { return $json.identifier }
-            } catch {
-                Write-Warning "Found $path but couldn't parse it: $_"
-            }
-        }
-    }
-    return $null
-}
 
 # Resolve source
 if (-not (Test-Path $Source)) {
@@ -73,13 +49,12 @@ $Source = (Resolve-Path $Source).Path
 
 # Resolve destination
 if (-not $Destination) {
-    $identifier = Find-TauriIdentifier
-    if (-not $identifier) {
-        Write-Error "Couldn't auto-detect the Tauri app identifier. Pass -Destination explicitly, e.g.:`n  .\sync-mods.ps1 -Destination `"$env:APPDATA\<your.app.identifier>\mods`""
+    if (-not $env:APPDATA) {
+        Write-Error "APPDATA isn't set. Pass -Destination explicitly."
         exit 1
     }
-    $Destination = Join-Path $env:APPDATA "$identifier\mods"
-    Write-Host "Detected app identifier '$identifier' -> $Destination"
+    $Destination = Join-Path $env:APPDATA "modapp\mods"
+    Write-Host "Using Electron userData mods directory -> $Destination"
 }
 
 if (-not (Test-Path $Destination)) {

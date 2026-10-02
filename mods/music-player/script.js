@@ -523,14 +523,14 @@ const MP4TagParser = {
 // Previously this rendered an <iframe> pointed at each service's special
 // "/embed" URL, since a normal page load would hit X-Frame-Options and
 // refuse to display. A native webview (same mechanism the browser mod
-// uses -- ModAPI.native.webview, backed by lib.rs's permission-gated
-// commands) isn't subject to iframe framing restrictions at all, so this
+// uses -- ModAPI.native.webview, backed by permission-gated Electron IPC)
+// isn't subject to iframe framing restrictions at all, so this
 // can load the REAL site instead of a stripped-down single-track widget:
 // full browsing, search, and a logged-in session, not just whatever one
 // link was pasted in.
 //
-// Trade-off, same one the browser mod's own docs call out: there's no
-// JS-side "navigate" API for an existing webview in Tauri 2, so entering
+// Trade-off, same one the browser mod's own docs call out: this API has no
+// JS-side "navigate" method for an existing webview, so entering
 // a new address destroys the old native webview and creates a new one at
 // the same position/size -- in-page state doesn't survive that, only the
 // last-loaded URL (persisted below) does.
@@ -656,12 +656,8 @@ function mountStreamingView(container) {
     }
   }
 
-  // A native webview is a separate OS-composited surface -- it paints on
-  // top of regular DOM content (including a translucent modal like
-  // Settings) no matter what z-index says, so there's no CSS fix. Instead,
-  // site.js tells every mod when an overlay widget opens/closes; hiding
-  // ours for the duration is what keeps Settings/Login from having the
-  // streaming site show through or on top of them.
+  // Hide the streaming webview while overlays are open so it doesn't show
+  // through Settings or Login.
   let overlayOpen = false;
   document.addEventListener('mods:overlay-opened', () => { overlayOpen = true; syncVisibility(); });
   document.addEventListener('mods:overlay-closed', () => { overlayOpen = false; syncVisibility(); });
@@ -718,7 +714,7 @@ function mountStreamingView(container) {
         '<div class="streaming-placeholder"><span class="material-symbols-outlined" ' +
         `style="font-size:44px;color:var(--danger)">error_outline</span><div>Native webview API ` +
         'is not available. Make sure this mod has the <code>webview.access</code> permission and ' +
-        'you\'re running the desktop (Tauri) build.</div></div>';
+        'you\'re running the Electron desktop build.</div></div>';
       return;
     }
 
@@ -749,7 +745,7 @@ function mountStreamingView(container) {
     await destroyWebview();
 
     try {
-      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: normalized, ...bounds });
+      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: normalized, ...bounds, container: embedArea });
       hasWebview = true;
       // Bounds above may have been the 0x0 fallback if this tab was still
       // hidden during the initial call -- force a fresh measurement now

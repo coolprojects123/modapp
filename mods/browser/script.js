@@ -39,12 +39,8 @@
   let historyIndex = restored ? restored.index : -1;
   let isLoading = false;
   let repositionTimer = null;
-  // A native webview is a separate OS-composited surface -- it paints on
-  // top of regular DOM content (including a translucent overlay modal like
-  // Settings) no matter what z-index says, so there's no CSS fix for that.
-  // site.js tells every mod when an overlay widget opens/closes; hiding
-  // ours for the duration is what keeps Settings/Login from having this
-  // tab's page show through or on top of them.
+  // Hide the webview while overlays are open so Settings/Login cannot show
+  // the page through them.
   let overlayOpen = false;
 
   let viewportEl = null;
@@ -146,7 +142,7 @@
     await destroyWebview();
 
     try {
-      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: target, ...bounds });
+      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: target, ...bounds, container: viewportEl });
       hasWebview = true;
       // The bounds used above may have been the 0x0 fallback, captured
       // while this tab was still `display: none` during its initial
@@ -175,8 +171,20 @@
     id: 'browser',
     label: 'Browser',
     icon: 'public',
+    fullBleed: true,
     render(container) {
       container.classList.add('browser-tab');
+      const heightChain = [container, container.parentElement, container.parentElement?.parentElement,
+        container.parentElement?.parentElement?.parentElement];
+      for (const node of heightChain) {
+        if (!node) continue;
+        node.style.height = '100%';
+        node.style.minHeight = '0';
+        node.style.flex = '1 1 auto';
+      }
+      container.style.flex = '1 1 auto';
+      container.style.height = '100%';
+      container.style.minHeight = '0';
 
       const toolbar = document.createElement('div');
       toolbar.className = 'browser-toolbar';
@@ -247,6 +255,10 @@
 
       viewportEl = document.createElement('div');
       viewportEl.className = 'browser-viewport';
+      viewportEl.style.flex = '1 1 auto';
+      viewportEl.style.height = '100%';
+      viewportEl.style.minHeight = '0';
+      viewportEl.style.display = 'block';
 
       statusEl = document.createElement('div');
       statusEl.className = 'browser-status';
@@ -257,7 +269,7 @@
         viewportEl.innerHTML =
           '<p class="browser-error">Native webview API is not available.<br>' +
           'Make sure this mod has the <code>webview.access</code> permission in its ' +
-          '<code>mod.json</code> and you\'re running the desktop (Tauri) build.</p>';
+          '<code>mod.json</code> and you\'re running the Electron desktop build.</p>';
         return;
       }
 

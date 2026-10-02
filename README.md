@@ -5,8 +5,7 @@
 A lightweight desktop app where the bare engine is genuinely bare — a topbar
 and blank space, nothing else — and everything visible comes from mods. The
 app loads its frontend directly from local files; it does not run a web server.
-The primary desktop build uses Tauri; an Electron build is also kept in the
-repo.
+Electron is the only supported desktop runtime.
 
 ```
 public/js/bootstrap.js   the engine. Loads which mods are enabled, injects
@@ -32,54 +31,15 @@ Login are unaffected either way, since those aren't part of it anymore.
 
 ## Run it
 
-### Tauri (lighter build)
-
-Tauri uses the operating system WebView instead of bundling Chromium. It uses
-the same `public/` frontend and keeps live mods in its writable
-application-data directory. Building it requires Rust and the Tauri system
-dependencies for the target platform.
-
-```sh
-npm install
-npm run tauri:dev
-npm run tauri:build
-```
-
-`tauri dev` starts a small static server (`scripts/dev-server.js`) that serves
-`public/` and `mods/`. It prefers a standalone binary at `scripts/bin/dev-server`
-(`dev-server.exe` on Windows), so Node isn't required, and falls back to
-`node scripts/dev-server.js` if the binary isn't there. Get the binary by
-either:
-
-- downloading `dev-server-<os>-<cpu>` from the
-  [Releases](https://github.com/coolprojects123/modapp/releases) page, saving it
-  as `scripts/bin/dev-server` (or `dev-server.exe`), and running
-  `chmod +x scripts/bin/dev-server` on Linux/macOS; or
-- building it yourself with `node scripts/build-dev-server.js` (needs Node 20+
-  and network access once; the result runs without Node).
-
-`scripts/bin/` and `build/` are build output and shouldn't be committed.
-
-On first launch the bundled mods are copied into `<app data>/mods`. Bundled
-mods are refreshed from the app on every start, so edits you make to a bundled
-mod's files in that folder are overwritten; put your own mods in their own
-folders. Each mod gets a private data folder at `<app data>/mod-data/<mod-id>`.
-
-### Electron
-
 ```sh
 npm install
 npm start
 ```
 
-This launches the app in a desktop window using Electron. Electron copies the
-shipped mods into a writable `userData/mods` directory; that is the only live
-app directory. The bundled application files remain read-only. Music files
-are imported into the current app session as local object URLs and are not
-uploaded anywhere.
-
-> The security model described below (permissions, sandboxing, CSP, updater
-> checks) is implemented in the **Tauri** build.
+Build installers with `npm run build:windows` or `npm run build:linux`.
+The app copies shipped mods into Electron's writable `userData/mods` directory
+on first launch. Each mod gets a private `userData/mod-data/<mod-id>` folder.
+Imported music stays on the local machine.
 
 ## Core mod
 
@@ -189,17 +149,20 @@ The last loaded mod that calls `setIdentity` wins.
 ### Native APIs and permissions
 
 Desktop mods reach native features through `ModAPI.native` (also available as
-`window.appAPI`). What a mod is allowed to do is declared in the
-`permissions` array of its `mod.json`, and enforced by the Rust side. A mod
-that is disabled gets no capabilities.
+`window.appAPI`). Capabilities are checked in Electron's main process against
+the calling mod's manifest; a disabled mod gets no capabilities.
 
 | Permission | Grants |
 | --- | --- |
-| `fs.read`, `fs.write`, `fs.read_dir`, `fs.ensure_dir`, `fs.remove`, `fs.move` | file access **inside the mod's own data folder only** |
-| `webview.access` | create / show / hide / move / close native webviews (`http(s)` URLs only) |
+| `fs.read`, `fs.write`, `fs.read_dir`, `fs.ensure_dir`, `fs.remove`, `fs.move` | corresponding filesystem access outside the mod's own data folder |
+| `webview.access` | create / show / hide / close contained Electron `<webview>` elements (`http(s)` URLs only) |
 | `settings.read`, `settings.write` | read / write site settings (used by the Core mod) |
 | `mods.toggle` | enable or disable mods (used by the Core mod) |
-| `shell.run` | run shell commands from the mod's `backend.lua` |
+| `shell.run` | run a bounded shell command from the mod's private data folder |
+| `pty.access` | create an interactive terminal session |
+| `dialog.pick` | open native file/folder pickers |
+| `net.fetch` | fetch HTTP(S) resources |
+| `notifications.send` | show rate-limited desktop notifications |
 
 ```js
 // Files: scoped to <app data>/mod-data/<mod-id>
@@ -207,26 +170,22 @@ const fs = ModAPI.native.fs.forMod('my-mod');
 await fs.writeFile('notes/today.txt', 'hello');
 const text = await fs.readFile('notes/today.txt');
 
-// Native webview (needs "webview.access")
+// Contained Electron webview (needs "webview.access")
 await ModAPI.native.webview.create('my-mod', 'main', {
-  url: 'https://example.com', x: 0, y: 64, width: 800, height: 600,
+  url: 'https://example.com', container: document.querySelector('#webview-host'),
 });
 
-// Shell (needs "shell.run" and a run_command function in backend.lua)
+// Shell (needs "shell.run")
 const result = await ModAPI.native.shell.forMod('my-mod').run('uname -a');
 console.log(result.stdout, result.stderr, result.code, result.timedOut);
+
+// Network (needs "net.fetch")
+const response = await ModAPI.native.net.fetch('my-mod', 'https://example.com/data');
 ```
 
-Paths must be relative to the mod's data folder: `..`, absolute paths and
-symlinks that point outside the folder are rejected. Each mod's data folder is
-capped at 4 GiB.
-
-**Backend scripts.** A mod can ship a `backend.lua`, run in a sandboxed Lua
-state (no `io`, `os`, `dofile`, `loadfile` or `require`) with a 64 MiB memory
-limit and an instruction budget that stops runaway loops. It is called with
-`ModAPI.native.callBackend(modId, functionName, [args...])`; arguments are
-strings. Host functions such as `run_shell` and `ensure_dir` are available
-inside the script but can't be invoked directly as the entry point.
+Relative paths are confined to the mod's data folder; traversal and symlink
+escapes are rejected. Absolute paths require the matching `fs.*` permission.
+Each mod's data folder is capped at 4 GiB.
 
 **Shell commands** (`shell.run`) run through `bash -c` (`cmd /C` on Windows),
 default to the mod's own data folder as working directory, time out after 30
@@ -243,7 +202,7 @@ console.log(result.stdout, result.stderr, result.code);
 ```
 
 Pass a working directory as the second argument when needed. This native API
-is available in the Electron and Tauri desktop builds, not in a plain browser.
+is available in the Electron desktop build, not in a plain browser.
 
 ### Trust model
 
@@ -255,10 +214,11 @@ JavaScript can ask for another mod's backend, so installing a mod that
 declares `shell.run` (like the IDE) effectively lets any installed mod run
 commands. Only install mods you trust.
 
-Other protections in the Tauri build: a Content-Security-Policy that limits
-scripts and network access, an asset-protocol scope limited to
-`<app data>/mods` and the music player's data, and native webviews restricted
-to `http(s)` pages that get no access to the app's commands.
+Installed mods share one renderer and should be treated as trusted code.
+Permission checks prevent accidental access and constrain well-behaved mods,
+but are not a security boundary against malicious JavaScript that can call the
+shared preload API. Remote webviews accept only HTTP(S) URLs and do not receive
+the app's preload bridge.
 
 ### Enabling/disabling
 
@@ -267,36 +227,16 @@ switch; the `core` folder is shown as locked.
 
 ## Settings
 
-The `Core` mod reads and writes site settings and enabled-mod state. In the
-Tauri build these live in the app-data `mods` folder (`.settings.json` and
-`.config.json`); the accent color picker and mod toggles are available in
-Settings.
+The `Core` mod reads and writes site settings and enabled-mod state. These live
+in Electron's `userData/mods` folder (`.settings.json` and `.config.json`); the
+accent color picker and mod toggles are available in Settings.
 
-## Updates (Tauri build)
+## Updates
 
-Updates are served from GitHub Releases: the app checks
-`https://github.com/coolprojects123/modapp/releases/latest/download/latest.json`.
-Update packages must be signed, and the app only treats updates as configured
-when a public key is set in `src-tauri/tauri.conf.json`
-(`plugins.updater.pubkey`). Installing always asks for confirmation in a native
-dialog, so a mod can't install an update silently.
-
-To set up releases:
-
-1. Generate a key pair: `cargo tauri signer generate -w ~/.tauri/modapp.key`
-2. Put the **public** key in `plugins.updater.pubkey`.
-3. Keep the **private** key out of the repo. Provide it to the release build as
-   `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set),
-   for example as GitHub Actions secrets.
-4. Set `bundle.createUpdaterArtifacts` to `true` and publish a normal
-   (non-draft, non-prerelease) GitHub release that includes `latest.json`.
-
-The updater key is only for verifying updates; it is unrelated to the
-operating-system code signing described in the next section.
-
-The app version is `version` in `src-tauri/tauri.conf.json`; keep
-`src-tauri/Cargo.toml` and `package.json` in step with it. Installed copies
-only offer an update when `latest.json` lists a higher version.
+Packaged builds check GitHub Releases through `electron-updater`; installing an
+update always requires confirmation in a native dialog. Tag builds publish as
+a draft release, so publish the draft when its installers and update metadata
+are ready. The app version is the `version` in `package.json`.
 
 ## Distribution and code signing
 
@@ -306,7 +246,7 @@ you install or first run the app:
 - **Windows:** SmartScreen may show "Windows protected your PC" and list the
   publisher as unknown. Choose **More info → Run anyway** if you trust the
   download. The publisher name in the installer's properties comes from the
-  signing certificate, not from the publisher field in `tauri.conf.json`.
+  signing certificate.
 - **macOS:** Gatekeeper may block the app because it isn't signed and
   notarized. Right-click the app and choose **Open**, or allow it under
   System Settings → Privacy & Security.
@@ -315,11 +255,8 @@ you install or first run the app:
 Only download releases from this repository's
 [Releases](https://github.com/coolprojects123/modapp/releases) page.
 
-If signing is added later, Tauri supports it through `bundle.windows`
-(`signCommand` or `certificateThumbprint`) on Windows and Apple Developer ID
-signing plus notarization on macOS. Signing certificates and their passwords
-must never be committed to the repo; provide them to the release build as
-secrets.
+Signing certificates and their passwords must never be committed to the repo;
+provide them to release builds as secrets.
 
 ## Project layout
 
@@ -332,8 +269,7 @@ mods/<id>/...                any other mod you add
 public/index.html            loads mods.js, bootstrap.js, then site.js
 public/js/bootstrap.js       the engine: loads mods, defines ModAPI
 public/js/site.js            the bare site: topbar + blank content
-public/js/native-api-v2.js   native API bridge (ModAPI.native / window.appAPI)
+public/js/native-api.js      Electron API bridge (ModAPI.native / window.appAPI)
 public/css/site.css          all core styling
-src-tauri/                   Rust side: mod loading, permissions, Lua backends
-electron/                    Electron build
+electron/                    Electron main process, preload, and scoped APIs
 ```

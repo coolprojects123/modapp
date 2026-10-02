@@ -15,6 +15,25 @@
 
 * { box-sizing: border-box; }
 
+.mod-native-webview-host {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.mod-native-webview {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
 html, body {
   margin: 0;
   height: 100%;
@@ -170,12 +189,14 @@ a { color: var(--accent); }
 
 .main.full-bleed {
   padding: 0;
+  height: 100%;
 }
 
 .main.full-bleed .content-panel {
   max-width: none;
   flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
 }
 
 /* Blank by default — a mod's tab render() is the only thing that ever
@@ -189,6 +210,8 @@ a { color: var(--accent); }
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 100%;
+  flex: 1 1 auto;
 }
 
 /* Created in site.js for each tab; had no styling of its own before, which
@@ -200,11 +223,13 @@ a { color: var(--accent); }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100%;
 }
 
 .main.full-bleed .tab-view {
   flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
 }
 
 .content-panel:not(:empty) {

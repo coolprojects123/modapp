@@ -1,9 +1,7 @@
-name: Release
+name: Electron Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
@@ -11,34 +9,19 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     strategy:
       fail-fast: false
-
       matrix:
         include:
-          - platform: ubuntu-22.04
-            args: "--bundles appimage,deb,rpm"
-
-          - platform: windows-latest
-            args: "--bundles msi,nsis"
-
-    runs-on: ${{ matrix.platform }}
-
+          - os: ubuntu-22.04
+            build-script: build:linux
+          - os: windows-latest
+            build-script: build:windows
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xdg-utils
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -46,60 +29,56 @@ jobs:
           node-version: lts/*
           cache: npm
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      # EVS (castLabs VMP signing) is only needed for Windows; Linux Widevine has no VMP.
+      - name: Set up Python for EVS signing
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
         with:
-          workspaces: "./src-tauri -> target"
-          # Only the main-branch runs of THIS SAME workflow save a reusable
-          # cache -- a cache saved from a one-off tag ref is basically never
-          # restorable again (each tag is a unique ref). Pushes to main
-          # (which now also run this workflow, see 'on:' above) are what
-          # seed the default-branch cache that tag-triggered runs below
-          # restore from -- no separate CI workflow needed for that.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          python-version: "3.12"
+
+      - name: Install EVS client
+        if: runner.os == 'Windows'
+        run: python -m pip install --upgrade castlabs-evs
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Build (main branch -- cache warm-up only, nothing published)
-        if: github.ref == 'refs/heads/main'
-        run: npx tauri build ${{ matrix.args }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # electron comes from a castLabs GitHub URL; npm 12 blocks git dependencies by default.
+          # If npm still refuses it, change root to all.
+          NPM_CONFIG_ALLOW_GIT: root
 
-      - name: Upload build artifacts (main branch only)
-        if: github.ref == 'refs/heads/main'
+      - name: Test
+        run: npm test
+
+      - name: Build Electron packages
+        run: npm run ${{ matrix.build-script }}
+        env:
+          # Used by build/evs-sign.js (afterSign hook); ignored on Linux.
+          EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
+          EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: modapp-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/**
+          name: electron-${{ matrix.os }}
+          path: dist-electron/**
           if-no-files-found: error
           retention-days: 14
 
-      - name: Build and publish Tauri release (tag pushes only)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: tauri-apps/tauri-action@v0
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-electron
+          merge-multiple: true
+
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dist-electron/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-        with:
-          tauriScript: "npx tauri"
-
-          args: ${{ matrix.args }}
-
-          tagName: "v__VERSION__"
-          releaseName: "modapp v__VERSION__"
-
-          releaseBody: |
-            modapp __VERSION__
-
-            Download the installer for your platform from the assets below.
-
-          releaseDraft: true
-          prerelease: false

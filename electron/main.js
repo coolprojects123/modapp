@@ -1,10 +1,18 @@
-// ELECTRON FOR TESTING ONLY. This file is not used in the Tauri build, which uses src-tauri/src/lib.rs instead.
-const { app, BrowserWindow, WebContentsView } = require('electron');
+// Electron main process: owns app data, permission checks, and native services.
+const { app, BrowserWindow, components } = require('electron');
+// `components` only exists on the castlabs Electron build (Widevine); it is undefined on stock Electron.
 const { ipcMain } = require('electron');
+const { dialog, Notification } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const pty = require('node-pty');
+const { createModFilesystem } = require('./mod-fs');
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
 
 // ============================================================
 // Widevine CDM setup. Vanilla Electron doesn't bundle Widevine
@@ -77,8 +85,11 @@ function findWidevineCdm() {
   return null;
 }
 
-const widevine = findWidevineCdm();
-if (widevine) {
+// On castlabs Electron the CDM is installed by `components`, so don't point Chromium at an external one.
+const widevine = components ? null : findWidevineCdm();
+if (components) {
+  console.log('[widevine] castlabs Electron detected; CDM is managed by the components API');
+} else if (widevine) {
   app.commandLine.appendSwitch('widevine-cdm-path', widevine.path);
   app.commandLine.appendSwitch('widevine-cdm-version', widevine.version);
   console.log(`[widevine] using CDM ${widevine.version} from ${widevine.path}`);
@@ -92,7 +103,8 @@ if (widevine) {
 
 let mainWindow;
 const rootDir = path.join(__dirname, '..');
-const modsDir = path.join(app.getPath('userData'), 'mods');
+const isDev = !app.isPackaged;
+const modsDir = isDev ? path.join(rootDir, 'mods') : path.join(app.getPath('userData'), 'mods');
 const settingsPath = path.join(modsDir, '.settings.json');
 const configPath = path.join(modsDir, '.config.json');
 
@@ -105,17 +117,18 @@ const defaultSettings = {
   reduceMotion: false,
 };
 
-fs.mkdirSync(modsDir, { recursive: true });
-for (const entry of fs.readdirSync(path.join(rootDir, 'mods'), { withFileTypes: true })) {
-  const sourcePath = path.join(rootDir, 'mods', entry.name);
-  const targetPath = path.join(modsDir, entry.name);
-  if (entry.isDirectory() && !fs.existsSync(targetPath)) fs.cpSync(sourcePath, targetPath, { recursive: true });
+function ensureRuntimeSettingsFiles() {
+  if (isDev) return;
+
+  fs.mkdirSync(modsDir, { recursive: true });
+  for (const [sourceName, targetName] of [['settings.json', '.settings.json'], ['mods-config.json', '.config.json']]) {
+    const targetPath = path.join(modsDir, targetName);
+    const sourcePath = path.join(rootDir, sourceName);
+    if (!fs.existsSync(targetPath) && fs.existsSync(sourcePath)) fs.copyFileSync(sourcePath, targetPath);
+  }
 }
-for (const [sourceName, targetName] of [['settings.json', '.settings.json'], ['mods-config.json', '.config.json']]) {
-  const targetPath = path.join(modsDir, targetName);
-  const sourcePath = path.join(rootDir, sourceName);
-  if (!fs.existsSync(targetPath) && fs.existsSync(sourcePath)) fs.copyFileSync(sourcePath, targetPath);
-}
+
+ensureRuntimeSettingsFiles();
 
 function readJson(filePath, fallback) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
@@ -152,66 +165,25 @@ function discoverMods() {
 // New Centralized FS API Endpoints
 // ============================================================
 
-// Filesystem operations
-ipcMain.handle('ensure_dir', (_event, { path: dirPath }) => {
-  const fullPath = path.join(modsDir, dirPath);
-  fs.mkdirSync(fullPath, { recursive: true });
-  return fullPath;
-});
-
-ipcMain.handle('read_file', (_event, { path: filePath }) => {
-  const fullPath = path.join(modsDir, filePath);
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(`File not found: ${fullPath}`);
-  }
-  return fs.readFileSync(fullPath, 'utf8');
-});
-
-ipcMain.handle('write_file', (_event, { path: filePath, content }) => {
-  const fullPath = path.join(modsDir, filePath);
-  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-  fs.writeFileSync(fullPath, content, 'utf8');
-  return true;
-});
-
-ipcMain.handle('read_dir', (_event, { path: dirPath }) => {
-  const fullPath = path.join(modsDir, dirPath);
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(`Directory not found: ${fullPath}`);
-  }
-  return fs.readdirSync(fullPath);
-});
-
-ipcMain.handle('path_exists', (_event, { path: checkPath }) => {
-  const fullPath = path.join(modsDir, checkPath);
-  return fs.existsSync(fullPath);
-});
-
-// Shell operations
-ipcMain.handle('shell:run', (_event, { command, cwd }) => {
-  return new Promise((resolve) => {
-    execFile('/usr/bin/bash', ['-lc', command], { 
-      cwd: cwd ? path.join(modsDir, cwd) : modsDir, 
-      timeout: 30000, 
-      maxBuffer: 1024 * 1024 
-    }, (error, stdout, stderr) => {
-      resolve({ code: error?.code ?? 0, stdout, stderr });
-    });
-  });
-});
+// Mod filesystem operations are registered below, after permission helpers.
 
 // ============================================================
 // Settings and Mod Management
 // ============================================================
-ipcMain.handle('settings:read', () => ({ ...defaultSettings, ...readJson(settingsPath, {}) }));
-ipcMain.handle('settings:write', (_event, changes) => {
+ipcMain.handle('settings:read', (_event, { modId }) => {
+  requireEnabledPermission(modId, 'settings.read');
+  return { ...defaultSettings, ...readJson(settingsPath, {}) };
+});
+ipcMain.handle('settings:write', (_event, { modId, changes }) => {
+  requireEnabledPermission(modId, 'settings.write');
   const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
   writeJson(settingsPath, settings);
   return settings;
 });
 
 ipcMain.handle('mods:list', () => discoverMods());
-ipcMain.handle('mods:toggle', (_event, id) => {
+ipcMain.handle('mods:toggle', (_event, { modId, id }) => {
+  requireEnabledPermission(modId, 'mods.toggle');
   const mod = discoverMods().find((item) => item.id === id);
   if (!mod || mod.core) return mod ? mod.enabled : false;
   const config = readJson(configPath, {});
@@ -220,91 +192,49 @@ ipcMain.handle('mods:toggle', (_event, id) => {
   return config[id];
 });
 
-// ============================================================
-// Updates
-// ============================================================
-ipcMain.handle('updates:check', () => ({ available: false }));
-ipcMain.handle('updates:install', () => ({ installed: false, available: false }));
-
-// ============================================================
-// Legacy Backwards Compatibility
-// ============================================================
-
-// Old mods:callBackend endpoint - redirects to new system
-ipcMain.handle('mods:callBackend', async (_event, { modId, functionName, args }) => {
-  console.warn('[Electron] mods:callBackend is deprecated. Use direct API calls.');
-  
-  // Route to new endpoints based on modId and functionName
-  if (modId === 'core') {
-    if (functionName === 'read_settings') {
-      return JSON.stringify({ ...defaultSettings, ...readJson(settingsPath, {}) });
-    }
-    if (functionName === 'write_settings') {
-      const changes = JSON.parse(args[0] || '{}');
-      const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
-      writeJson(settingsPath, settings);
-      return JSON.stringify(settings);
-    }
-    if (functionName === 'toggle_mod') {
-      const id = args[0];
-      const mod = discoverMods().find((item) => item.id === id);
-      if (!mod || mod.core) return mod ? mod.enabled : false;
-      const config = readJson(configPath, {});
-      config[id] = !mod.enabled;
-      writeJson(configPath, config);
-      return config[id];
-    }
-  }
-  
-  if (modId === 'music-player' && functionName === 'ensure_uploads_dir') {
-    const fullPath = path.join(modsDir, 'music-uploads');
-    fs.mkdirSync(fullPath, { recursive: true });
-    return fullPath;
-  }
-  
-  if (modId === 'ide' && functionName === 'run_command') {
-    const command = args[0];
-    const cwd = args[1] || '';
-    return new Promise((resolve) => {
-      execFile('/usr/bin/bash', ['-lc', command], {
-        cwd: cwd ? path.join(modsDir, cwd) : modsDir,
-        timeout: 30000,
-        maxBuffer: 1024 * 1024
-      }, (error, stdout, stderr) => {
-        resolve({ code: error?.code ?? 0, stdout, stderr });
-      });
-    });
-  }
-  
-  throw new Error(`Unknown backend function: ${modId}.${functionName}`);
+ipcMain.handle('updates:check', async () => {
+  if (!app.isPackaged) return { available: false, configured: false };
+  const result = await autoUpdater.checkForUpdates();
+  const update = result?.updateInfo;
+  if (!update || update.version === app.getVersion()) return { available: false };
+  const notes = update.releaseNotes;
+  return {
+    available: true,
+    version: update.version,
+    currentVersion: app.getVersion(),
+    body: typeof notes === 'string' ? notes : Array.isArray(notes) ? notes.map((entry) => entry.note || '').join('\n') : '',
+    date: update.releaseDate || null,
+  };
 });
 
-// Old native:invoke endpoint - redirects to new system
-ipcMain.handle('native:invoke', (_event, { method, payload } = {}) => {
-  console.warn('[Electron] native:invoke is deprecated.');
-  
-  if (method === 'ensure_music_uploads_dir') {
-    const fullPath = path.join(modsDir, 'music-uploads');
-    fs.mkdirSync(fullPath, { recursive: true });
-    return fullPath;
-  }
-  if (method === 'shell.run') {
-    const { command, cwd } = payload || {};
-    return new Promise((resolve) => {
-      execFile('/usr/bin/bash', ['-lc', command], {
-        cwd: cwd ? path.join(modsDir, cwd) : modsDir,
-        timeout: 30000,
-        maxBuffer: 1024 * 1024
-      }, (error, stdout, stderr) => {
-        resolve({ code: error?.code ?? 0, stdout, stderr });
-      });
-    });
-  }
-  
-  throw new Error(`Unknown native method: ${method}`);
+ipcMain.handle('updates:install', async () => {
+  if (!app.isPackaged) return { installed: false, available: false };
+  const result = await autoUpdater.checkForUpdates();
+  const update = result?.updateInfo;
+  if (!update || update.version === app.getVersion()) return { installed: false, available: false };
+
+  const notes = update.releaseNotes;
+  const detail = (typeof notes === 'string' ? notes : Array.isArray(notes) ? notes.map((entry) => entry.note || '').join('\n') : '')
+    .slice(0, 600);
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Install update?',
+    message: `Version ${update.version} is available (you have ${app.getVersion()}).`,
+    detail,
+    buttons: ['Install', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (confirmation.response !== 0) return { installed: false, available: true, declined: true };
+
+  await autoUpdater.downloadUpdate();
+  autoUpdater.quitAndInstall(true, true);
+  return { installed: true, available: true, version: update.version };
 });
 
 function modPermissions(modId) {
+  if (typeof modId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(modId)) throw new Error('invalid mod id');
   const manifestPath = path.join(modsDir, modId, 'mod.json');
   const manifest = readJson(manifestPath, null);
   return new Set(manifest?.permissions || []);
@@ -316,99 +246,75 @@ function requirePermission(modId, permission) {
   }
 }
 
+function requireEnabledPermission(modId, permission) {
+  requirePermission(modId, permission);
+  if (!modEnabled(modId)) throw new Error(`mod '${modId}' is disabled`);
+}
+
 function modEnabled(modId) {
   if (modId === 'core') return true;
   const mod = discoverMods().find((item) => item.id === modId);
   return !!mod?.enabled;
 }
 
-// ============================================================
-// Mod webviews. Namespaced by mod_id + instance so one mod can never
-// address another's webview, mirroring the Rust side's mod_webview_label.
-// A real Chrome/Chromium UA is honest here (Electron's webContents *is*
-// Chromium), unlike the WebKitGTK/WKWebView cases where the UA had to be
-// picked per-engine to avoid a mismatch.
-// ============================================================
-const modWebviews = new Map(); // "modId:instance" -> { view, bounds, attached }
+const modFilesystem = createModFilesystem({
+  dataDir: path.join(app.getPath('userData'), 'mod-data'),
+  requireEnabled(modId) {
+    if (!modEnabled(modId)) throw new Error(`mod '${modId}' is disabled`);
+  },
+  requirePermission(modId, permission) {
+    if (!modEnabled(modId)) throw new Error(`mod '${modId}' is disabled`);
+    requirePermission(modId, permission);
+  },
+});
 
-function webviewKey(modId, instance) {
-  return `${modId}:${instance}`;
+for (const [operation, method] of [
+  ['ensureDir', 'ensureDir'], ['readFile', 'readFile'], ['readBytes', 'readBytes'],
+  ['writeFile', 'writeFile'], ['writeBytes', 'writeBytes'], ['readDir', 'readDir'],
+  ['exists', 'exists'], ['resolvePath', 'resolvePath'], ['toFileUrl', 'toFileUrl'], ['removeFile', 'removeFile'],
+  ['removeDir', 'removeDir'], ['move', 'move'],
+]) {
+  ipcMain.handle(`fs:${operation}`, (_event, { modId, path: filePath, from, to, content }) => {
+    try {
+      if (operation === 'move') return modFilesystem[method](modId, from, to);
+      if (operation === 'writeFile' || operation === 'writeBytes') return modFilesystem[method](modId, filePath, content);
+      return modFilesystem[method](modId, filePath);
+    } catch (error) {
+      // A missing file is a normal answer (first run, optional config). Throwing from an ipcMain handler makes
+      // Electron print a stack trace for every one, so hand it to preload.js, which rethrows it in the renderer.
+      if (error && error.code === 'ENOENT') return { __fsError: { code: 'ENOENT', message: error.message } };
+      throw error;
+    }
+  });
 }
 
-function defaultUserAgent() {
-  switch (process.platform) {
-    case 'win32':
-      return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-    case 'darwin':
-      return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-    default:
-      return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  }
-}
-
-ipcMain.handle('webview:create', (_event, { modId, instance, url, x, y, width, height }) => {
+// ============================================================
+// Mod webviews. Electron renders these as <webview> elements in the frontend
+// so CSS containment and stacking work; these IPC handlers remain the
+// permission gate before the frontend creates or manages an element.
+// ============================================================
+ipcMain.handle('webview:create', (_event, { modId, url }) => {
   requirePermission(modId, 'webview.access');
   if (!modEnabled(modId)) throw new Error(`mod '${modId}' is disabled`);
-
-  const key = webviewKey(modId, instance);
-  if (modWebviews.has(key)) throw new Error(`webview '${key}' already exists — close it first`);
-
-  const view = new WebContentsView({
-    webPreferences: { contextIsolation: true, sandbox: true },
-  });
-  view.webContents.setUserAgent(defaultUserAgent());
-  view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) });
-  mainWindow.contentView.addChildView(view);
-  view.webContents.loadURL(url);
-
-  modWebviews.set(key, { view, bounds: { x, y, width, height }, attached: true });
+  const parsedUrl = new URL(url);
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error('only http(s) URLs can be opened in a mod webview');
+  }
   return true;
 });
 
-ipcMain.handle('webview:close', (_event, { modId, instance }) => {
+ipcMain.handle('webview:close', (_event, { modId }) => {
   requirePermission(modId, 'webview.access');
-  const key = webviewKey(modId, instance);
-  const entry = modWebviews.get(key);
-  if (!entry) return true;
-  if (entry.attached) mainWindow.contentView.removeChildView(entry.view);
-  entry.view.webContents.close();
-  modWebviews.delete(key);
   return true;
 });
 
 ipcMain.handle('webview:setVisible', (_event, { modId, instance, visible }) => {
   requirePermission(modId, 'webview.access');
-  const key = webviewKey(modId, instance);
-  const entry = modWebviews.get(key);
-  if (!entry) return true;
-  // WebContentsView has no direct show/hide toggle -- detaching from the
-  // window's contentView is the documented way to hide one, and
-  // re-attaching (with bounds restored) to show it again.
-  if (visible && !entry.attached) {
-    mainWindow.contentView.addChildView(entry.view);
-    entry.view.setBounds({
-      x: Math.round(entry.bounds.x),
-      y: Math.round(entry.bounds.y),
-      width: Math.round(entry.bounds.width),
-      height: Math.round(entry.bounds.height),
-    });
-    entry.attached = true;
-  } else if (!visible && entry.attached) {
-    mainWindow.contentView.removeChildView(entry.view);
-    entry.attached = false;
-  }
   return true;
 });
 
-ipcMain.handle('webview:setBounds', (_event, { modId, instance, x, y, width, height }) => {
+ipcMain.handle('webview:setBounds', (_event, { modId }) => {
   requirePermission(modId, 'webview.access');
-  const key = webviewKey(modId, instance);
-  const entry = modWebviews.get(key);
-  if (!entry) return true;
-  entry.bounds = { x, y, width, height };
-  if (entry.attached) {
-    entry.view.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) });
-  }
   return true;
 });
 
@@ -417,10 +323,11 @@ function createWindow() {
     width: 1280,
     height: 900,
     title: 'modapp',
-    icon: path.join(rootDir, 'src-tauri', 'icons', 'icon.png'),
+    icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      webviewTag: true,
       preload: path.join(__dirname, 'preload.js')
     }
   });
@@ -432,6 +339,50 @@ function createWindow() {
   });
 }
 
+// Pages inside a mod <webview> that try to open a new window (target=_blank, window.open, login popups)
+// would otherwise be blocked silently. Load those URLs in the same webview instead.
+// Test switch: PowerShell> $env:MODAPP_NO_GPU=1; npm start   (rules out GPU/hardware-decode playback problems)
+if (process.env.MODAPP_NO_GPU) app.disableHardwareAcceleration();
+
+// Electron's default user agent contains "Electron/x" and sites (Spotify, Google) treat that as an unknown or
+// mobile browser. Report a normal desktop Chrome for the current OS and Chromium version instead.
+function desktopUserAgent() {
+  const os = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+    : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : 'X11; Linux x86_64';
+  const major = process.versions.chrome.split('.')[0];
+  return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+  contents.setUserAgent(desktopUserAgent());
+
+  // Debug aid: PowerShell> $env:MODAPP_DEBUG_WEBVIEW=1; npm start
+  // Prints webview errors, DRM/licence requests and failed HTTP requests to this terminal.
+  if (process.env.MODAPP_DEBUG_WEBVIEW) {
+    contents.on('console-message', (event, level, message) => {
+      const lvl = event.level ?? level;
+      const msg = String(event.message ?? message);
+      if (lvl === 'error' || lvl === 3 || /drm|eme|widevine|licen[sc]e|keysystem|mediakeys/i.test(msg)) {
+        console.log('[webview console]', lvl, msg.slice(0, 400));
+      }
+    });
+    contents.session.webRequest.onCompleted({ urls: ['*://*/*'] }, (details) => {
+      const drm = /licen[sc]e|widevine|drm|playready/i.test(details.url);
+      if ((details.statusCode >= 400 && !/sessions\/current/.test(details.url)) || drm) {
+        console.log('[webview http]', details.statusCode, details.method, details.url.slice(0, 200));
+      }
+    });
+    contents.on('media-started-playing', () => console.log('[webview] media started'));
+    contents.on('media-paused', () => console.log('[webview] media paused'));
+  }
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) contents.loadURL(url);
+    return { action: 'deny' };
+  });
+});
+
 app.whenReady().then(async () => {
   // `app.components` (the Chromium component updater used to load an
   // external Widevine CDM) only exists on Widevine-enabled Electron
@@ -442,9 +393,9 @@ app.whenReady().then(async () => {
   // (without DRM/Widevine playback) on stock Electron, and still gets
   // full Widevine support automatically if you later switch back to the
   // castlabs build.
-  if (app.components && typeof app.components.whenReady === 'function') {
-    await app.components.whenReady();
-    console.log('components ready:', app.components.status());
+  if (components && typeof components.whenReady === 'function') {
+    await components.whenReady();
+    console.log('components ready:', components.status());
   } else {
     console.warn(
       '[widevine] app.components is not available on this Electron build. ' +
@@ -467,4 +418,165 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
+});
+
+const notificationTimes = new Map();
+
+ipcMain.handle('shell:run', (_event, { modId, command, cwd = '' }) => {
+  requireEnabledPermission(modId, 'shell.run');
+  if (typeof command !== 'string' || !command.trim() || Buffer.byteLength(command) > 64 * 1024) {
+    throw new Error('shell.run needs a non-empty command smaller than 64 KiB');
+  }
+  const workingDirectory = modFilesystem.resolvePath(modId, cwd || '');
+  fs.mkdirSync(workingDirectory, { recursive: true });
+  const executable = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
+  return new Promise((resolve) => {
+    execFile(executable, args, { cwd: workingDirectory, timeout: 30000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({
+        code: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        timedOut: error?.killed === true || error?.code === 'ETIMEDOUT',
+      });
+    });
+  });
+});
+
+ipcMain.handle('net:fetch', async (_event, { modId, url }) => {
+  requireEnabledPermission(modId, 'net.fetch');
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error('Invalid URL'); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('fetch_url: url must be http(s)');
+  const response = await fetch(parsed, { signal: AbortSignal.timeout(20000), redirect: 'follow' });
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 1024 * 1024) throw new Error('response is too large (max 1 MiB)');
+  return {
+    code: response.ok ? 0 : response.status,
+    stdout: bytes.toString('utf8'),
+    stderr: response.ok ? '' : response.statusText,
+    timedOut: false,
+  };
+});
+
+ipcMain.handle('notifications:send', (_event, { modId, title, body }) => {
+  requireEnabledPermission(modId, 'notifications.send');
+  if (typeof title !== 'string' || !title.trim()) throw new Error('notification title must not be empty');
+  if (title.length > 500 || String(body || '').length > 500) throw new Error('notification title/body is too long');
+  const now = Date.now();
+  const recent = (notificationTimes.get(modId) || []).filter((timestamp) => now - timestamp < 60000);
+  if (recent.length >= 10) throw new Error(`mod '${modId}' is sending notifications too fast (max 10/min)`);
+  recent.push(now);
+  notificationTimes.set(modId, recent);
+  if (!Notification.isSupported()) throw new Error('OS notifications are not supported');
+  new Notification({ title, body: String(body || '') }).show();
+});
+
+ipcMain.handle('dialog:pickFolder', async (_event, { modId, title, defaultDir }) => {
+  requireEnabledPermission(modId, 'dialog.pick');
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: title || undefined,
+    defaultPath: defaultDir || undefined,
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
+
+ipcMain.handle('dialog:pickFiles', async (_event, { modId, title, defaultDir, multiple }) => {
+  requireEnabledPermission(modId, 'dialog.pick');
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: title || undefined,
+    defaultPath: defaultDir || undefined,
+    properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+  });
+  return result.canceled ? [] : result.filePaths;
+});
+
+ipcMain.handle('dialog:pickSaveFile', async (_event, { modId, title, defaultDir, defaultName }) => {
+  requireEnabledPermission(modId, 'dialog.pick');
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: title || undefined,
+    defaultPath: defaultDir && defaultName ? path.join(defaultDir, defaultName) : (defaultDir || defaultName || undefined),
+  });
+  return result.canceled ? null : result.filePath || null;
+});
+
+const ptySessions = new Map();
+
+function availableShells() {
+  if (process.platform === 'win32') {
+    const root = process.env.SystemRoot || 'C:\\Windows';
+    const candidates = [
+      { id: 'powershell', label: 'Windows PowerShell', path: path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') },
+      { id: 'cmd', label: 'Command Prompt', path: process.env.ComSpec || path.join(root, 'System32', 'cmd.exe') },
+    ];
+    if (process.env.ProgramFiles) {
+      candidates.unshift({ id: 'pwsh', label: 'PowerShell 7', path: path.join(process.env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe') });
+    }
+    return candidates.filter((item) => fs.existsSync(item.path)).map((item) => ({ ...item, args: [] }));
+  }
+  return [...new Set([process.env.SHELL, '/bin/bash', '/bin/zsh', '/bin/sh'].filter(Boolean))]
+    .filter((shellPath) => fs.existsSync(shellPath) && !shellPath.endsWith('/nologin') && !shellPath.endsWith('/false'))
+    .map((shellPath) => ({ id: shellPath, label: path.basename(shellPath), path: shellPath, args: [] }));
+}
+
+function ptySessionKey(modId, session) {
+  if (typeof session !== 'string' || !/^[A-Za-z0-9]{16,64}$/.test(session)) throw new Error('invalid terminal session id');
+  return `${modId}:${session}`;
+}
+
+ipcMain.handle('pty:listShells', (_event, { modId }) => {
+  requireEnabledPermission(modId, 'pty.access');
+  return availableShells().map(({ id, label }) => ({ id, label }));
+});
+
+ipcMain.handle('pty:spawn', (_event, { modId, session, shellId, cols, rows, cwd }) => {
+  requireEnabledPermission(modId, 'pty.access');
+  const key = ptySessionKey(modId, session);
+  if (ptySessions.has(key)) throw new Error('terminal session already exists');
+  if ([...ptySessions.keys()].filter((existing) => existing.startsWith(`${modId}:`)).length >= 16) {
+    throw new Error('too many open terminal sessions');
+  }
+  const shell = availableShells().find((item) => item.id === shellId) || availableShells()[0];
+  if (!shell) throw new Error('no supported shell was found');
+  const workingDirectory = modFilesystem.resolvePath(modId, cwd || '');
+  fs.mkdirSync(workingDirectory, { recursive: true });
+  const terminal = pty.spawn(shell.path, shell.args, {
+    name: 'xterm-256color',
+    cols: Math.max(1, Math.min(500, Number(cols) || 80)),
+    rows: Math.max(1, Math.min(300, Number(rows) || 24)),
+    cwd: workingDirectory,
+    env: process.env,
+  });
+  ptySessions.set(key, { modId, session, terminal });
+  terminal.onData((data) => mainWindow?.webContents.send('pty:data', { modId, session, data }));
+  terminal.onExit(({ exitCode }) => {
+    ptySessions.delete(key);
+    mainWindow?.webContents.send('pty:exit', { modId, session, exitCode });
+  });
+  return shell.label;
+});
+
+ipcMain.handle('pty:write', (_event, { modId, session, data }) => {
+  requireEnabledPermission(modId, 'pty.access');
+  const entry = ptySessions.get(ptySessionKey(modId, session));
+  if (entry && typeof data === 'string' && Buffer.byteLength(data) <= 64 * 1024) entry.terminal.write(data);
+});
+
+ipcMain.handle('pty:resize', (_event, { modId, session, cols, rows }) => {
+  requireEnabledPermission(modId, 'pty.access');
+  const entry = ptySessions.get(ptySessionKey(modId, session));
+  if (entry) entry.terminal.resize(Math.max(1, Math.min(500, Number(cols) || 80)), Math.max(1, Math.min(300, Number(rows) || 24)));
+});
+
+ipcMain.handle('pty:kill', (_event, { modId, session }) => {
+  requirePermission(modId, 'pty.access');
+  const key = ptySessionKey(modId, session);
+  ptySessions.get(key)?.terminal.kill();
+  ptySessions.delete(key);
+});
+
+app.on('before-quit', () => {
+  for (const { terminal } of ptySessions.values()) terminal.kill();
+  ptySessions.clear();
 });

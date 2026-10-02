@@ -8,8 +8,7 @@
  * this file renders an empty page.
  */
 
-// Check if ModAPI already exists (set by native-api-v2.js)
-// If so, extend it; otherwise create a new one
+// Check if ModAPI already exists. If so, extend it; otherwise create a new one.
 if (!window.ModAPI) {
   window.ModAPI = {};
 }
@@ -45,43 +44,20 @@ const modAPIImpl = (function () {
 
     get identity() { return { ...identity }; },
 
-    // Native API - use existing if available, otherwise create placeholder
+    // Native API - use the Electron bridge if available.
     native: existingNativeAPI || {
-      // Deprecated: no backing command exists anymore (native_invoke was
-      // removed). Kept only so a stale call fails with a clear message
-      // instead of a bare "undefined is not a function".
-      invoke(method, payload) {
-        if (!window.appAPI?.invoke) {
-          return Promise.reject(new Error(
-            `ModAPI.native.invoke('${method}') is no longer available — use ModAPI.native.fs or other specialized APIs instead.`
-          ));
-        }
-        return window.appAPI.invoke(method, payload);
-      },
-
-      // The one bridge every mod's backend.lua is reached through. modId
-      // must match the calling mod's own folder id — a mod cannot call
-      // into another mod's backend, since call_mod_backend on the Rust
-      // side loads that mod's own permissions and backend.lua only.
-      callBackend(modIdArg, functionName, args = []) {
-        if (!window.appAPI?.callBackend) {
-          return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
-        }
-        return window.appAPI.callBackend(modIdArg, functionName, args);
-      },
-
       // Native embedded webviews (e.g. an in-app browser tab). Gated by the
       // single 'webview.access' permission in the calling mod's mod.json —
       // same permission for create/close/show/hide/reposition, since a mod
       // that can create one can reasonably manage the ones it created.
       // `instance` namespaces multiple webviews from the same mod (e.g. one
-      // per open browser tab); modIdArg works the same way as callBackend's.
+      // per open browser tab); each instance remains scoped to its owning mod.
       webview: {
-        create(modIdArg, instance, { url, x, y, width, height } = {}) {
+        create(modIdArg, instance, { url, x, y, width, height, container } = {}) {
           if (!window.appAPI?.webview) {
             return Promise.reject(new Error('Native APIs are available in the desktop build only.'));
           }
-          return window.appAPI.webview.create(modIdArg, instance, url, x, y, width, height);
+          return window.appAPI.webview.create(modIdArg, instance, url, x, y, width, height, container);
         },
         close(modIdArg, instance) {
           if (!window.appAPI?.webview) {
@@ -179,7 +155,7 @@ const modAPIImpl = (function () {
 })();
 
 // Merge the implementation with any existing ModAPI properties.
-// This preserves ModAPI.native that was set by native-api-v2.js.
+// This preserves ModAPI.native that was set by the Electron bridge.
 // Uses defineProperties (not Object.assign) because modId and identity are
 // accessor getters on modAPIImpl -- Object.assign would invoke each getter
 // once and copy the resulting value as a static property, permanently
@@ -273,22 +249,8 @@ function loadScript(src) {
   });
 }
 
-async function autoCheckForUpdates() {
-  if (!window.appAPI?.checkForUpdates) return;
-
-  try {
-    const result = await window.appAPI.checkForUpdates();
-    if (result?.available) {
-      console.info('[updates] new version available:', result.version || 'unknown');
-    }
-  } catch (error) {
-    console.warn('[updates] update check failed:', error);
-  }
-}
-
 (async function boot() {
   const mods = await loadMods();
-  await autoCheckForUpdates();
   // Every mod script has now run and had a chance to register tabs/widgets.
   // site.js listens for this to build the nav/widget-bar from whatever
   // got registered.

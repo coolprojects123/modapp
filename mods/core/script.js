@@ -565,17 +565,11 @@ document.addEventListener('mods:ready', async () => {
   checkForUpdatesOnStartup();
 });
 
-// Nothing else in the app ever called check_for_updates/install_update, so
-// the updater was fully configured on the backend but never actually ran.
-// install_update re-checks and shows a native confirm dialog itself before
-// downloading anything, so there's no need for our own UI here -- just ask.
 async function checkForUpdatesOnStartup() {
   if (!window.appAPI?.checkForUpdates) return;
   try {
     const result = await window.appAPI.checkForUpdates();
-    if (result?.available) {
-      await window.appAPI.installUpdate();
-    }
+    if (result?.available) await window.appAPI.installUpdate();
   } catch (error) {
     console.error('Update check failed:', error);
   }

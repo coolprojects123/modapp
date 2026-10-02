@@ -1,3 +1,5 @@
+// Resolve vendor files relative to this script (works from file:// in Electron, no dev-server URL).
+window.__ideAssetBase = window.__ideAssetBase || (document.currentScript && document.currentScript.src ? new URL('.', document.currentScript.src).href : '');
 const IDE_FILES = [
   { name: 'scratch.js', language: 'javascript', value: "ModAPI.registerTab({\n  id: 'hello',\n  label: 'Hello',\n  icon: 'code',\n  render(container) {\n    container.textContent = 'Hello from a mod';\n  },\n});" },
   { name: 'mod.json', language: 'json', value: '{\n  "name": "My Mod",\n  "version": "1.0.0",\n  "enabledByDefault": true\n}' },
@@ -768,6 +770,7 @@ function renderIde(container) {
     setTimeout(() => { if (!editor && !fallback) createFallback(); }, 3500);
   }
   // --- xterm.js terminal ---------------------------------------------
+  const IDE_ASSET_BASE = window.__ideAssetBase;
   let term;
   let fitAddon;
 
@@ -787,7 +790,7 @@ function renderIde(container) {
     if (document.querySelector('link[data-ide-xterm-css]')) return;
     const link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = 'http://localhost:1430/mods/ide/vendor/xterm.css';
+    link.href = `${IDE_ASSET_BASE}vendor/xterm.css`;
     link.dataset.ideXtermCss = 'true';
     document.head.appendChild(link);
   }
@@ -831,8 +834,8 @@ function renderIde(container) {
   function fitTerminal() { if (fitAddon) { try { fitAddon.fit(); } catch { /* mount not visible yet */ } } }
   async function initTerminal() {
     ensureXtermStyles();
-    if (!window.Terminal) await loadScript('http://localhost:1430/mods/ide/vendor/xterm.js');
-    if (!window.FitAddon) await loadScript('http://localhost:1430/mods/ide/vendor/addon-fit.js');
+    if (!window.Terminal) await loadScript(`${IDE_ASSET_BASE}vendor/xterm.js`);
+    if (!window.FitAddon) await loadScript(`${IDE_ASSET_BASE}vendor/addon-fit.js`);
     const TerminalCtor = typeof window.Terminal === 'function' ? window.Terminal : window.Terminal && window.Terminal.Terminal;
     const FitCtor = typeof window.FitAddon === 'function' ? window.FitAddon : window.FitAddon && window.FitAddon.FitAddon;
     if (!TerminalCtor) throw new Error('xterm.js did not expose a Terminal constructor');
