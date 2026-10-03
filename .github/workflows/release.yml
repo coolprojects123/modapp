@@ -29,23 +29,43 @@ jobs:
           node-version: lts/*
           cache: npm
 
-      # EVS (castLabs VMP signing) is only needed for Windows; Linux Widevine has no VMP.
+      - name: Check tag matches package.json version
+        shell: bash
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      # EVS (castLabs VMP signing). Required on Windows; experimental on Linux
+      # (the Linux Widevine CDM has no VMP, so build/evs-sign.js treats Linux failures as warnings).
       - name: Set up Python for EVS signing
-        if: runner.os == 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install EVS client
-        if: runner.os == 'Windows'
         run: python -m pip install --upgrade castlabs-evs
+
+      - name: Check EVS credentials
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
+          EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
+        run: |
+          if [ -z "$EVS_ACCOUNT_NAME" ] || [ -z "$EVS_PASSWD" ]; then
+            echo "::error::EVS_ACCOUNT_NAME / EVS_PASSWD repository secrets are missing or empty"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm ci
         env:
           # electron comes from a castLabs GitHub URL; npm 12 blocks git dependencies by default.
-          # If npm still refuses it, change root to all.
-          NPM_CONFIG_ALLOW_GIT: root
+          # "root" is unreliable on npm 11 (npm/cli#9189), so use "all".
+          NPM_CONFIG_ALLOW_GIT: all
 
       - name: Test
         run: npm test
@@ -53,7 +73,7 @@ jobs:
       - name: Build Electron packages
         run: npm run ${{ matrix.build-script }}
         env:
-          # Used by build/evs-sign.js (afterSign hook); ignored on Linux.
+          # Used by build/evs-sign.js (afterSign hook).
           EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
           EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
 
@@ -61,7 +81,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: electron-${{ matrix.os }}
-          path: dist-electron/**
+          path: |
+            dist-electron/*.exe
+            dist-electron/*.AppImage
+            dist-electron/*.deb
+            dist-electron/*.rpm
+            dist-electron/*.blockmap
+            dist-electron/latest*.yml
           if-no-files-found: error
           retention-days: 14
 
