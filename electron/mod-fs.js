@@ -75,11 +75,16 @@ function createModFilesystem({ modsDir, dataDir, requireEnabled, requirePermissi
     const targetReal = realPathForMissingTarget(target);
     const ownData = isWithin(baseReal, targetReal);
 
-    if (!absolute && !ownData) throw new Error('path escapes the mod data directory');
-    if (!absolute && !isWithin(base, target)) throw new Error('path escapes the mod data directory');
+    // Block absolute paths entirely for security
+    // Absolute paths can access any file on the system, which is a security risk
+    if (absolute) {
+      throw new Error('absolute paths are not allowed; use relative paths within mod data directory');
+    }
 
-    if (ownData) requireEnabled(modId);
-    else requirePermission(modId, permission);
+    if (!ownData) throw new Error('path escapes the mod data directory');
+    if (!isWithin(base, target)) throw new Error('path escapes the mod data directory');
+
+    requireEnabled(modId);
 
     return { base, target, ownData };
   }

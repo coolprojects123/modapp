@@ -128,6 +128,15 @@
       const element = document.createElement('webview');
       element.className = 'mod-native-webview';
       element.setAttribute('partition', `persist:mod-${modId}`);
+      
+      // Security: Disable Node.js integration and enable context isolation
+      element.setAttribute('nodeintegration', 'false');
+      element.setAttribute('contextisolation', 'true');
+      element.setAttribute('webgl', 'false');
+      element.setAttribute('allowpopups', 'false');
+      element.setAttribute('nodeintegrationinsubframes', 'false');
+      element.setAttribute('nodeintegrationinworker', 'false');
+      
       element.src = url;
       container.classList.add('mod-native-webview-host');
       container.appendChild(element);

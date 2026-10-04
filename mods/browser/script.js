@@ -281,6 +281,16 @@
       view.className = 'br-view';
       view.setAttribute('partition', PARTITION);
       view.setAttribute('src', tab.url);
+      
+      // Security: Disable Node.js integration and enable context isolation
+      view.setAttribute('nodeintegration', 'false');
+      view.setAttribute('contextisolation', 'true');
+      view.setAttribute('webgl', 'false');
+      view.setAttribute('allowpopups', 'false');
+      
+      // Prevent access to nodeIntegrationInWorker (CVE-2026-102676)
+      view.setAttribute('nodeintegrationinsubframes', 'false');
+      view.setAttribute('nodeintegrationinworker', 'false');
 
       let titleFrame = 0;
       view.addEventListener('page-title-updated', (e) => {

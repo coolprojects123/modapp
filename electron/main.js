@@ -525,6 +525,57 @@ ipcMain.handle('net:fetch', async (event, { modId, url }) => {
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error('Invalid URL'); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('fetch_url: url must be http(s)');
+  
+  // SSRF protection: Block access to internal/private networks
+  const hostname = parsed.hostname.toLowerCase();
+  const blockedHosts = [
+    'localhost', '127.0.0.1', '::1', '0.0.0.0',
+    // Private IPv4 ranges
+    '10.0.0.0/8', '10.255.255.255',
+    '172.16.0.0/12', '172.31.255.255',
+    '192.168.0.0/16', '192.168.255.255',
+    // Link-local
+    '169.254.0.0/16', '169.254.255.255',
+    // Private IPv6 ranges
+    'fc00::/7', 'fe80::/10',
+  ];
+  
+  // Check for exact matches first
+  if (['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname)) {
+    throw new Error('fetch to localhost/internal addresses not allowed');
+  }
+  
+  // Check if hostname falls within private IP ranges
+  function isPrivateIp(host) {
+    // IPv4: 10.0.0.0/8
+    if (/^10\./.test(host)) return true;
+    // IPv4: 172.16.0.0/12
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\. /.test(host)) return true;
+    // IPv4: 192.168.0.0/16
+    if (/^192\.168\./.test(host)) return true;
+    // IPv4: 169.254.0.0/16 (link-local)
+    if (/^169\.254\./.test(host)) return true;
+    // IPv6: fc00::/7 (unique local address)
+    if (/^[fF][cC]/i.test(host)) return true;
+    // IPv6: fe80::/10 (link-local)
+    if (/^[fF][eE][89abAB]/i.test(host)) return true;
+    return false;
+  }
+  
+  if (isPrivateIp(hostname)) {
+    throw new Error('fetch to private/internal network addresses not allowed');
+  }
+  
+  // Block known cloud metadata endpoints
+  const metadataEndpoints = [
+    '169.254.169.254', // AWS metadata
+    'metadata.google.internal', // GCP metadata
+    '169.254.170.2', // AWS ECS task metadata
+  ];
+  if (metadataEndpoints.includes(hostname)) {
+    throw new Error('fetch to cloud metadata endpoints not allowed');
+  }
+  
   const response = await fetch(parsed, { signal: AbortSignal.timeout(20000), redirect: 'follow' });
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > 1024 * 1024) throw new Error('response is too large (max 1 MiB)');
@@ -553,32 +604,88 @@ ipcMain.handle('notifications:send', (event, { modId, title, body }) => {
 ipcMain.handle('dialog:pickFolder', async (event, { modId, title, defaultDir }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'dialog.pick');
+  
+  // Validate defaultDir doesn't contain traversal or null bytes
+  if (defaultDir) {
+    if (typeof defaultDir !== 'string') throw new Error('defaultDir must be a string');
+    if (defaultDir.includes('\0')) throw new Error('defaultDir contains null bytes');
+    if (defaultDir.includes('..')) throw new Error('defaultDir contains path traversal');
+  }
+  
   const result = await dialog.showOpenDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir || undefined,
     properties: ['openDirectory', 'createDirectory'],
   });
+  
+  // Validate returned path
+  if (!result.canceled && result.filePaths[0]) {
+    const selectedPath = result.filePaths[0];
+    if (typeof selectedPath !== 'string' || selectedPath.includes('\0')) {
+      throw new Error('invalid file path selected');
+    }
+  }
+  
   return result.canceled ? null : result.filePaths[0] || null;
 });
 
 ipcMain.handle('dialog:pickFiles', async (event, { modId, title, defaultDir, multiple }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'dialog.pick');
+  
+  // Validate defaultDir
+  if (defaultDir) {
+    if (typeof defaultDir !== 'string') throw new Error('defaultDir must be a string');
+    if (defaultDir.includes('\0')) throw new Error('defaultDir contains null bytes');
+    if (defaultDir.includes('..')) throw new Error('defaultDir contains path traversal');
+  }
+  
   const result = await dialog.showOpenDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir || undefined,
     properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
   });
+  
+  // Validate returned paths
+  if (!result.canceled && result.filePaths) {
+    for (const filePath of result.filePaths) {
+      if (typeof filePath !== 'string' || filePath.includes('\0')) {
+        throw new Error('invalid file path selected');
+      }
+    }
+  }
+  
   return result.canceled ? [] : result.filePaths;
 });
 
 ipcMain.handle('dialog:pickSaveFile', async (event, { modId, title, defaultDir, defaultName }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'dialog.pick');
+  
+  // Validate defaultDir and defaultName
+  if (defaultDir) {
+    if (typeof defaultDir !== 'string') throw new Error('defaultDir must be a string');
+    if (defaultDir.includes('\0')) throw new Error('defaultDir contains null bytes');
+    if (defaultDir.includes('..')) throw new Error('defaultDir contains path traversal');
+  }
+  if (defaultName) {
+    if (typeof defaultName !== 'string') throw new Error('defaultName must be a string');
+    if (defaultName.includes('\0')) throw new Error('defaultName contains null bytes');
+    if (defaultName.includes('/') || defaultName.includes('\\')) throw new Error('defaultName contains path separators');
+  }
+  
   const result = await dialog.showSaveDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir && defaultName ? path.join(defaultDir, defaultName) : (defaultDir || defaultName || undefined),
   });
+  
+  // Validate returned path
+  if (!result.canceled && result.filePath) {
+    if (typeof result.filePath !== 'string' || result.filePath.includes('\0')) {
+      throw new Error('invalid file path selected');
+    }
+  }
+  
   return result.canceled ? null : result.filePath || null;
 });
 
@@ -624,12 +731,52 @@ ipcMain.handle('pty:spawn', (event, { modId, session, shellId, cols, rows, cwd }
   if (!shell) throw new Error('no supported shell was found');
   const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
+  
+  // Filter sensitive environment variables to prevent secret exposure
+  // Only pass essential, non-sensitive environment variables to the PTY
+  const safeEnv = {
+    // Keep basic system variables
+    HOME: process.env.HOME,
+    USER: process.env.USER,
+    USERNAME: process.env.USERNAME,
+    PATH: process.env.PATH,
+    SHELL: process.env.SHELL,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    TERM: process.env.TERM,
+    
+    // Keep minimal OS-specific variables
+    ...(process.platform === 'win32' ? {
+      SYSTEMROOT: process.env.SystemRoot,
+      WINDIR: process.env.WINDIR,
+    } : {}),
+  };
+  
+  // Filter out any variables that might contain secrets
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key, value]) => {
+      const sensitivePrefixes = [
+        'AWS_', 'SECRET_', 'TOKEN_', 'PASS', 'PASSWORD', 'KEY', 'CREDENTIAL',
+        'API_', 'ACCESS_', 'PRIVATE_', 'SSH_', 'GITHUB_', 'GITLAB_',
+      ];
+      const sensitiveKeys = [
+        'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+        'NPM_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN',
+      ];
+      
+      const isSensitive = sensitivePrefixes.some(prefix => key.startsWith(prefix)) ||
+                          sensitiveKeys.includes(key);
+      
+      return !isSensitive;
+    })
+  );
+  
   const terminal = pty.spawn(shell.path, shell.args, {
     name: 'xterm-256color',
     cols: Math.max(1, Math.min(500, Number(cols) || 80)),
     rows: Math.max(1, Math.min(300, Number(rows) || 24)),
     cwd: workingDirectory,
-    env: process.env,
+    env,
   });
   ptySessions.set(key, { modId: callerModId, session, terminal });
   terminal.onData((data) => mainWindow?.webContents.send('pty:data', { modId: callerModId, session, data }));

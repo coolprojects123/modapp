@@ -39,12 +39,13 @@ test('relative traversal is rejected before touching disk', (context) => {
   assert.throws(() => filesystem.writeFile('demo', '../outside.txt', 'blocked'), /traversal/);
 });
 
-test('absolute paths require the matching permission', (context) => {
+test('absolute paths are rejected for security', (context) => {
   const { root, filesystem, permissions } = setup();
   context.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const outside = path.join(root, 'outside.txt');
-  assert.throws(() => filesystem.writeFile('demo', outside, 'blocked'), /lacks permission/);
+  // Absolute paths are now blocked entirely for security
+  assert.throws(() => filesystem.writeFile('demo', outside, 'blocked'), /absolute paths are not allowed/);
+  // Even with fs.write permission, absolute paths are blocked
   permissions.add('fs.write');
-  filesystem.writeFile('demo', outside, 'allowed');
-  assert.equal(fs.readFileSync(outside, 'utf8'), 'allowed');
+  assert.throws(() => filesystem.writeFile('demo', outside, 'allowed'), /absolute paths are not allowed/);
 });
