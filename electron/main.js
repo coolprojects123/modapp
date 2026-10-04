@@ -503,48 +503,6 @@ ipcMain.handle('shell:run', (event, { modId, command, cwd = '' }) => {
   if (typeof command !== 'string' || !command.trim() || Buffer.byteLength(command) > 64 * 1024) {
     throw new Error('shell.run needs a non-empty command smaller than 64 KiB');
   }
-  
-  // Validate command to prevent shell injection
-  // Block dangerous shell metacharacters and commands
-  const dangerousPatterns = [
-    ';',    // Command separator
-    '&',    // Background/job control
-    '|',    // Pipe
-    '`',    // Command substitution
-    '$(',   // Command substitution
-    '>',    // Output redirection
-    '<',    // Input redirection
-    '>>',   // Append redirection
-    'rm',   // Dangerous: remove files
-    'dd',   // Dangerous: disk destruction
-    'mv',   // Dangerous: move files
-    'cp',   // Potentially dangerous
-    'chmod',// Dangerous: change permissions
-    'chown',// Dangerous: change ownership
-    'kill', // Dangerous: kill processes
-    'pkill',// Dangerous: kill processes
-    'wget', // Can download malicious files
-    'curl', // Can download malicious files
-    'nc',   // Network tool
-    'netcat',// Network tool
-    'ssh',  // Remote access
-    'scp',  // File transfer
-    'sftp', // File transfer
-    'sudo', // Privilege escalation
-    'su',   // Privilege escalation
-  ];
-  
-  const hasDangerousPattern = dangerousPatterns.some(pattern => command.includes(pattern));
-  if (hasDangerousPattern) {
-    throw new Error('shell.run: command contains disallowed patterns or characters');
-  }
-  
-  // Additional validation: only allow alphanumeric, spaces, and safe characters
-  // This allows basic commands like 'ls -la', 'echo hello', etc.
-  if (!/^[a-zA-Z0-9_\-\.\/\s]+$/.test(command)) {
-    throw new Error('shell.run: command contains invalid characters');
-  }
-  
   const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   const executable = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
