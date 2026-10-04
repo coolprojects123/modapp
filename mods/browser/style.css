@@ -1,109 +1,190 @@
-.browser-tab {
-  display: flex !important;
-  flex-direction: column !important;
-  flex: 1 1 auto !important;
-  height: 100% !important;
-  min-height: 0 !important;
+/* ---------------- Browser tab ---------------- */
+
+.br-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--panel-2);
 }
 
-.browser-toolbar {
+.br-icon {
+  font-family: 'Material Symbols Outlined';
+  font-size: 17px;
+  line-height: 1;
+  font-weight: normal;
+  font-style: normal;
+}
+
+/* tab strip */
+
+.br-tabbar {
   display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  background: var(--panel);
+}
+
+.br-tab-list {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.br-tab-list::-webkit-scrollbar { display: none; }
+
+.br-tab {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  flex: 0 0 auto;
-}
-
-.browser-btn {
-  border: none;
-  background: rgba(255, 255, 255, 0.06);
-  color: inherit;
-  border-radius: 6px;
-  width: 30px;
-  height: 30px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.browser-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.browser-btn:disabled {
-  opacity: 0.35;
+  width: 190px;
+  max-width: 190px;
+  height: 36px;
+  padding: 0 6px 0 12px;
+  font-size: 12px;
+  color: var(--muted);
   cursor: default;
+  user-select: none;
+  outline: none;
 }
 
-.browser-go {
-  width: auto;
-  padding: 0 12px;
+.br-tab:hover { color: var(--text); }
+
+.br-tab[aria-selected="true"] {
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
 }
 
-.browser-url {
-  flex: 1 1 auto;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.2);
-  color: inherit;
-  font-size: 13px;
-}
-
-.browser-url:disabled {
-  opacity: 0.5;
-}
-
-/* Thin indeterminate progress bar shown during navigation. Sits directly
-   under the toolbar; height stays reserved (not display:none) so the
-   toolbar doesn't shift by a pixel when it turns on/off. */
-.browser-progress {
-  flex: 0 0 auto;
-  height: 2px;
-  background: transparent;
-  overflow: hidden;
-  position: relative;
-}
-
-.browser-progress.active::before {
+/* the accent marks the open tab */
+.br-tab[aria-selected="true"]::before {
   content: '';
   position: absolute;
   top: 0;
   left: 0;
-  height: 100%;
-  width: 40%;
-  background: rgba(120, 170, 255, 0.9);
-  animation: browser-progress-slide 1.1s ease-in-out infinite;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
 }
 
-@keyframes browser-progress-slide {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(350%); }
-}
+/* a sleeping tab has no live page; it loads when opened */
+.br-tab.asleep:not([aria-selected="true"]) .br-tab-title { opacity: 0.55; }
 
-.browser-viewport {
-  flex: 1 1 auto !important;
-  min-height: 0 !important;
-  height: 100% !important;
-  position: relative !important;
-  display: block !important;
-  /* The Electron <webview> fills this contained host element. */
-}
+.br-tab:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
 
-.browser-status {
-  flex: 0 0 auto;
-  padding: 3px 10px;
-  font-size: 11px;
-  opacity: 0.6;
-  white-space: nowrap;
+.br-tab-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.browser-error {
-  padding: 24px;
-  font-size: 13px;
-  line-height: 1.5;
-  opacity: 0.8;
+.br-tab-audio { font-size: 14px; color: var(--accent); flex-shrink: 0; }
+.br-tab-audio[hidden] { display: none; }
+
+/* buttons */
+
+.br-btn,
+.br-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
 }
+
+.br-btn { width: 34px; height: 34px; border-radius: 8px; }
+.br-btn:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+.br-btn:disabled { opacity: 0.35; cursor: default; }
+.br-btn:focus-visible,
+.br-tab-close:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.br-tabbar > .br-btn { height: 36px; border-radius: 0; }
+
+.br-tab-close {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  opacity: 0;
+}
+
+.br-tab:hover .br-tab-close,
+.br-tab[aria-selected="true"] .br-tab-close,
+.br-tab-close:focus-visible { opacity: 1; }
+.br-tab-close:hover { background: var(--border); color: var(--text); }
+
+/* toolbar */
+
+.br-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.br-url {
+  flex: 1;
+  min-width: 0;
+  margin-left: 6px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  outline: none;
+}
+
+.br-url:focus-visible { border-color: var(--accent); }
+
+/* page area: every live page is stacked, only the open tab is visible */
+
+.br-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.br-view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.br-view.active {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.br-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.br-empty[hidden] { display: none; }

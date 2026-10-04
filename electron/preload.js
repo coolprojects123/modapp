@@ -93,10 +93,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     create: (modId, instance, url, x, y, width, height) =>
       ipcRenderer.invoke('webview:create', { modId, instance, url, x, y, width, height }),
     close: (modId, instance) => ipcRenderer.invoke('webview:close', { modId, instance }),
-    setVisible: (modId, instance, visible) =>
-      ipcRenderer.invoke('webview:setVisible', { modId, instance, visible }),
-    setBounds: (modId, instance, x, y, width, height) =>
-      ipcRenderer.invoke('webview:setBounds', { modId, instance, x, y, width, height }),
   },
   
 });

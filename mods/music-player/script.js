@@ -781,12 +781,54 @@ function mountStreamingView(container) {
   return { syncVisibility, destroyWebview };
 }
 
+// The shell can leave empty space between the app header and a tab's content
+// (panel margin/padding, or wrapper padding). Measure the real gap between this
+// tab and whatever sits above it in the layout, and pull the tab up by that
+// much. Measuring, instead of hard-coding a number, keeps it right if the
+// shell's spacing changes. Out-of-flow elements (fixed/absolute) are ignored so
+// a fixed header never makes it overshoot.
+function trimTopSpace(container) {
+  const MAX_TRIM_PX = 160;
+
+  function findPrevious() {
+    for (let node = container; node && node !== document.body; node = node.parentElement) {
+      for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        const style = getComputedStyle(sib);
+        if (style.display === 'none' || style.position === 'fixed' || style.position === 'absolute') continue;
+        return sib;
+      }
+    }
+    return null;
+  }
+
+  function apply() {
+    if (container.offsetParent === null) return; // hidden: nothing to measure
+    container.style.marginTop = '';
+    container.style.height = '';
+    const previous = findPrevious();
+    if (!previous) return;
+    const gap = container.getBoundingClientRect().top - previous.getBoundingClientRect().bottom;
+    if (gap < 1 || gap > MAX_TRIM_PX) return;
+    const trim = Math.round(gap);
+    container.style.marginTop = `-${trim}px`;
+    container.style.height = `calc(100% + ${trim}px)`;
+  }
+
+  requestAnimationFrame(apply);
+  window.addEventListener('resize', apply);
+  // Re-measure whenever the tab becomes visible again.
+  new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) apply();
+  }).observe(container);
+}
+
 function renderMusicPlayer(container) {
   ModAPI.music.ensureUploadsDir().catch((error) => {
     console.warn('[music-player] uploads folder check failed:', error);
   });
 
   container.classList.add('music-workspace');
+  trimTopSpace(container);
   container.innerHTML = `
     <div class="music-toptabs">
       <button class="music-toptab active" data-view="library">

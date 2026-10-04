@@ -1,10 +1,10 @@
 {
-  "id": "browser",
   "name": "Browser",
   "version": "1.0.0",
-  "description": "An embedded browser tab, backed by a real native webview (no iframe restrictions).",
+  "author": "modapp",
+  "description": "Tabbed browser. Background tabs are kept light so many tabs stay fast.",
   "enabledByDefault": true,
-  "permissions": ["webview.access"],
   "styles": ["style.css"],
-  "scripts": ["script.js"]
+  "scripts": ["script.js"],
+  "permissions": ["webview.access"]
 }

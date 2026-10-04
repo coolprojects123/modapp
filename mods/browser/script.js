@@ -1,318 +1,432 @@
+/**
+ * Browser tab: many tabs without lag.
+ *
+ * Every live <webview> is its own renderer process, so the cost of "many tabs" is
+ * the number of live pages, not the number of tab buttons. This mod keeps that
+ * number small:
+ *
+ *  - Lazy: restored tabs start asleep (URL and title only). A page loads the
+ *    first time its tab is opened.
+ *  - Capped: at most MAX_LIVE pages are alive. Opening another puts the
+ *    least-recently-used background tab to sleep.
+ *  - Idle: background tabs unused for IDLE_SLEEP_MS go to sleep.
+ *  - Audible tabs (music, calls) are never put to sleep.
+ *  - Background tabs are hidden with visibility + z-index, never display:none,
+ *    and stay mounted, so switching tabs does no layout work and no reload.
+ *
+ * A sleeping tab reloads its page when you open it again (scroll position and
+ * unsaved form data are lost), which is what makes the saving possible.
+ */
 (function () {
-  // Captured now, at load time, while bootstrap.js still has ModAPI's modId
-  // set to this mod's own id — by the time registerTab's render() runs
-  // later (on tab click), that context is gone.
-  const MOD_ID = window.ModAPI.modId;
-  const INSTANCE = 'main';
+  'use strict';
 
-  const hasWebviewAPI = !!window.ModAPI?.native?.webview;
+  const MOD_ID = 'browser';
+  const FILE = 'tabs.json';
+  const LS_KEY = 'modapp:browser';
+  const PARTITION = 'persist:browser';
+  const SEARCH_URL = 'https://duckduckgo.com/?q=';
 
-  const HOME_URL = 'https://www.google.com';
-  const STORAGE_KEY = 'browser-mod:session';
-  const REPOSITION_DEBOUNCE_MS = 40;
+  const MAX_LIVE = 5;
+  const IDLE_SLEEP_MS = 10 * 60 * 1000;
+  const SWEEP_MS = 60 * 1000;
+  const SAVE_DELAY_MS = 800;
 
-  function loadSession() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed.history) || typeof parsed.index !== 'number') return null;
-      return parsed;
-    } catch (err) {
-      return null;
+  const newId = () =>
+    (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  const icon = (name) => el('span', 'br-icon', name);
+
+  function toUrl(input) {
+    const text = input.trim();
+    if (!text) return '';
+    if (/^https?:\/\//i.test(text)) return text;
+    if (/^localhost(:\d+)?(\/.*)?$/i.test(text)) return `http://${text}`;
+    if (/^([\w-]+\.)+[a-z]{2,}(:\d+)?(\/.*)?$/i.test(text)) return `https://${text}`;
+    return SEARCH_URL + encodeURIComponent(text);
+  }
+
+  function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+  }
+
+  function tabLabel(tab) {
+    return tab.title || hostOf(tab.url) || 'New tab';
+  }
+
+  // ---------------------------------------------------------------- storage
+
+  function createStore() {
+    const fs = ModAPI.native?.fs?.forMod?.(MOD_ID);
+    if (fs) {
+      return {
+        async load() {
+          try {
+            return (await fs.exists(FILE)) ? JSON.parse(await fs.readFile(FILE)) : null;
+          } catch (err) {
+            console.error('[browser] load failed:', err);
+            return null;
+          }
+        },
+        save: (data) => fs.writeFile(FILE, JSON.stringify(data)),
+      };
     }
-  }
-
-  function saveSession() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ history: navHistory, index: historyIndex }));
-    } catch (err) {
-      // Storage full/unavailable — session just won't persist, not fatal.
-    }
-  }
-
-  const restored = loadSession();
-
-  let hasWebview = false; // tracks whether the native webview currently exists
-  let currentUrl = restored ? restored.history[restored.index] : HOME_URL;
-  let navHistory = restored ? restored.history : [];
-  let historyIndex = restored ? restored.index : -1;
-  let isLoading = false;
-  let repositionTimer = null;
-  // Hide the webview while overlays are open so Settings/Login cannot show
-  // the page through them.
-  let overlayOpen = false;
-
-  let viewportEl = null;
-  let urlInput = null;
-  let statusEl = null;
-  let progressEl = null;
-  let backBtn = null;
-  let fwdBtn = null;
-  let reloadBtn = null;
-  let homeBtn = null;
-  let goBtn = null;
-
-  function isVisible(container) {
-    return !!container && container.style.display !== 'none';
-  }
-
-  function computeBounds() {
-    if (!viewportEl) return null;
-    const rect = viewportEl.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return null;
     return {
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
+      async load() {
+        try { return JSON.parse(localStorage.getItem(LS_KEY)); } catch { return null; }
+      },
+      async save(data) { localStorage.setItem(LS_KEY, JSON.stringify(data)); },
     };
   }
 
-  async function destroyWebview() {
-    if (!hasWebview) return;
-    hasWebview = false;
-    try {
-      await window.ModAPI.native.webview.close(MOD_ID, INSTANCE);
-    } catch (err) {
-      // Already gone / never fully created — safe to ignore.
+  // The main process checks the permission, that the mod is enabled, and that the URL is http(s).
+  async function gate(tab) {
+    const api = window.electronAPI?.webview;
+    if (api?.create) await api.create(MOD_ID, tab.id, tab.url);
+  }
+
+  // ------------------------------------------------------------------- build
+
+  const store = createStore();
+  let root = null;
+
+  function build() {
+    if (root) return root;
+
+    let tabs = [];
+    let activeId = null;
+    let saveTimer = null;
+    const tabEls = new Map(); // id -> { root, title, audio }
+
+    // ---- DOM
+
+    const tabList = el('div', 'br-tab-list');
+    tabList.setAttribute('role', 'tablist');
+    tabList.setAttribute('aria-label', 'Browser tabs');
+    const addBtn = el('button', 'br-btn');
+    addBtn.type = 'button';
+    addBtn.title = 'New tab';
+    addBtn.setAttribute('aria-label', 'New tab');
+    addBtn.appendChild(icon('add'));
+    const tabBar = el('div', 'br-tabbar');
+    tabBar.append(tabList, addBtn);
+
+    function navButton(name, label) {
+      const b = el('button', 'br-btn');
+      b.type = 'button';
+      b.title = label;
+      b.setAttribute('aria-label', label);
+      b.appendChild(icon(name));
+      return b;
     }
-  }
+    const backBtn = navButton('arrow_back', 'Back');
+    const forwardBtn = navButton('arrow_forward', 'Forward');
+    const reloadBtn = navButton('refresh', 'Reload');
+    const urlInput = el('input', 'br-url');
+    urlInput.type = 'text';
+    urlInput.placeholder = 'Search or enter a web address';
+    urlInput.spellcheck = false;
+    urlInput.setAttribute('aria-label', 'Address');
+    const toolbar = el('div', 'br-toolbar');
+    toolbar.append(backBtn, forwardBtn, reloadBtn, urlInput);
 
-  async function doReposition() {
-    if (!hasWebview) return;
-    const bounds = computeBounds();
-    if (!bounds) return;
-    try {
-      await window.ModAPI.native.webview.setBounds(MOD_ID, INSTANCE, bounds);
-    } catch (err) {
-      console.warn('[browser mod] failed to reposition webview:', err);
-    }
-  }
+    const empty = el('div', 'br-empty');
+    const stack = el('div', 'br-stack');
+    stack.appendChild(empty);
 
-  // Coalesces bursts of reposition requests (window drag/resize can fire
-  // many times a second) into a single IPC call.
-  function reposition() {
-    if (repositionTimer) clearTimeout(repositionTimer);
-    repositionTimer = setTimeout(() => {
-      repositionTimer = null;
-      doReposition();
-    }, REPOSITION_DEBOUNCE_MS);
-  }
+    root = el('div', 'br-root');
+    root.append(tabBar, toolbar, stack);
 
-  function normalizeInput(raw) {
-    const value = raw.trim();
-    if (!value) return HOME_URL;
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return value; // already has a scheme
-    const looksLikeDomain = /^[^\s]+\.[^\s]{2,}$/.test(value) && !value.includes(' ');
-    return looksLikeDomain ? `https://${value}` : `https://www.google.com/search?q=${encodeURIComponent(value)}`;
-  }
+    // ---- helpers
 
-  function updateNavButtons() {
-    if (backBtn) backBtn.disabled = isLoading || historyIndex <= 0;
-    if (fwdBtn) fwdBtn.disabled = isLoading || historyIndex >= navHistory.length - 1;
-  }
+    const active = () => tabs.find((t) => t.id === activeId);
 
-  function setLoading(loading) {
-    isLoading = loading;
-    if (progressEl) progressEl.classList.toggle('active', loading);
-    if (reloadBtn) reloadBtn.disabled = loading;
-    if (homeBtn) homeBtn.disabled = loading;
-    if (goBtn) goBtn.disabled = loading;
-    if (urlInput) urlInput.disabled = loading;
-    updateNavButtons();
-  }
-
-  // Single visibility source of truth, combining the tab's own DOM
-  // visibility with whether an overlay widget currently needs this
-  // webview hidden out of the way.
-  function shouldBeVisible(container) {
-    return isVisible(container) && !overlayOpen;
-  }
-
-  async function openUrl(rawUrl, { recordHistory = true } = {}) {
-    if (!hasWebviewAPI) return;
-    const target = normalizeInput(rawUrl);
-    currentUrl = target;
-    if (urlInput) urlInput.value = target;
-    setLoading(true);
-    if (statusEl) statusEl.textContent = 'Loading…';
-
-    const bounds = computeBounds() || { x: 0, y: 0, width: 800, height: 600 };
-    await destroyWebview();
-
-    try {
-      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: target, ...bounds, container: viewportEl });
-      hasWebview = true;
-      // The bounds used above may have been the 0x0 fallback, captured
-      // while this tab was still `display: none` during its initial
-      // render(). The ResizeObserver-driven correction can race against
-      // this IPC call and lose (it checks hasWebview, which wasn't true
-      // yet) with nothing left to retrigger it afterward — so force one
-      // fresh measurement + reposition now that hasWebview is set and the
-      // tab is (should be) actually visible.
-      await doReposition();
-      if (statusEl) statusEl.textContent = target;
-    } catch (err) {
-      hasWebview = false;
-      if (statusEl) statusEl.textContent = `Failed to load: ${err.message || err}`;
+    function persist() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => {
+        const data = {
+          version: 1,
+          activeId,
+          tabs: tabs.map((t) => ({ id: t.id, url: t.url, title: t.title })),
+        };
+        Promise.resolve(store.save(data)).catch((err) => console.error('[browser] save failed:', err));
+      }, SAVE_DELAY_MS);
     }
 
-    if (recordHistory) {
-      navHistory = navHistory.slice(0, historyIndex + 1);
-      navHistory.push(target);
-      historyIndex = navHistory.length - 1;
+    function makeTab(url = '', title = '', id = newId()) {
+      return {
+        id, url, title,
+        view: null, waking: false, error: '',
+        loading: false, audible: false,
+        lastActive: Date.now(),
+      };
     }
-    saveSession();
-    setLoading(false);
-  }
 
-  window.ModAPI.registerTab({
-    id: 'browser',
-    label: 'Browser',
-    icon: 'public',
-    fullBleed: true,
-    render(container) {
-      container.classList.add('browser-tab');
-      const heightChain = [container, container.parentElement, container.parentElement?.parentElement,
-        container.parentElement?.parentElement?.parentElement];
-      for (const node of heightChain) {
-        if (!node) continue;
-        node.style.height = '100%';
-        node.style.minHeight = '0';
-        node.style.flex = '1 1 auto';
+    // ---- tab strip
+
+    function patchTab(tab) {
+      const parts = tabEls.get(tab.id);
+      if (!parts) return;
+      parts.title.textContent = tabLabel(tab);
+      parts.audio.hidden = !tab.audible;
+      parts.root.classList.toggle('asleep', !tab.view && !tab.waking && !!tab.url);
+      parts.root.title = tab.url ? `${tabLabel(tab)}\n${tab.url}${tab.view ? '' : '\n(asleep, loads when opened)'}` : '';
+    }
+
+    function renderTabs() {
+      tabEls.clear();
+      const nodes = tabs.map((tab) => {
+        const selected = tab.id === activeId;
+        const node = el('div', 'br-tab');
+        node.setAttribute('role', 'tab');
+        node.setAttribute('aria-selected', String(selected));
+        node.tabIndex = selected ? 0 : -1;
+
+        const audio = icon('volume_up');
+        audio.classList.add('br-tab-audio');
+        audio.hidden = true;
+        const title = el('span', 'br-tab-title');
+        const close = el('button', 'br-tab-close');
+        close.type = 'button';
+        close.tabIndex = -1;
+        close.title = 'Close tab';
+        close.setAttribute('aria-label', 'Close tab');
+        close.appendChild(icon('close'));
+        node.append(audio, title, close);
+
+        node.addEventListener('click', (event) => {
+          if (!event.target.closest('.br-tab-close')) select(tab.id);
+        });
+        node.addEventListener('auxclick', (event) => { if (event.button === 1) closeTab(tab.id); });
+        close.addEventListener('click', () => closeTab(tab.id));
+        node.addEventListener('keydown', (event) => {
+          const i = tabs.findIndex((t) => t.id === tab.id);
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(tab.id); }
+          else if (event.key === 'Delete') { event.preventDefault(); closeTab(tab.id); }
+          else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+            event.preventDefault();
+            const step = event.key === 'ArrowRight' ? 1 : -1;
+            select(tabs[(i + step + tabs.length) % tabs.length].id);
+            tabList.querySelector('[aria-selected="true"]')?.focus();
+          }
+        });
+
+        tabEls.set(tab.id, { root: node, title, audio });
+        patchTab(tab);
+        return node;
+      });
+      tabList.replaceChildren(...nodes);
+      tabList.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    // ---- toolbar + empty state
+
+    function syncToolbar() {
+      const tab = active();
+      const view = tab?.view;
+      let canBack = false, canForward = false;
+      try { canBack = !!view?.canGoBack(); canForward = !!view?.canGoForward(); } catch { /* not ready yet */ }
+      backBtn.disabled = !canBack;
+      forwardBtn.disabled = !canForward;
+      reloadBtn.disabled = !view;
+      const loading = !!tab?.loading;
+      reloadBtn.replaceChildren(icon(loading ? 'close' : 'refresh'));
+      reloadBtn.title = loading ? 'Stop' : 'Reload';
+      reloadBtn.setAttribute('aria-label', reloadBtn.title);
+      if (document.activeElement !== urlInput) urlInput.value = tab?.url || '';
+
+      if (!tab || (!tab.view && !tab.waking)) {
+        empty.hidden = false;
+        empty.textContent = tab?.error
+          ? tab.error
+          : tab?.url ? 'Loading...' : 'Search or enter a web address above.';
+      } else {
+        empty.hidden = true;
       }
-      container.style.flex = '1 1 auto';
-      container.style.height = '100%';
-      container.style.minHeight = '0';
+    }
 
-      const toolbar = document.createElement('div');
-      toolbar.className = 'browser-toolbar';
+    function applyStacking() {
+      for (const t of tabs) if (t.view) t.view.classList.toggle('active', t.id === activeId);
+    }
 
-      backBtn = document.createElement('button');
-      backBtn.className = 'browser-btn';
-      backBtn.textContent = '←';
-      backBtn.title = 'Back';
-      backBtn.disabled = true;
-      backBtn.addEventListener('click', () => {
-        if (historyIndex > 0) {
-          historyIndex -= 1;
-          openUrl(navHistory[historyIndex], { recordHistory: false });
-        }
-      });
+    // ---- page lifecycle
 
-      fwdBtn = document.createElement('button');
-      fwdBtn.className = 'browser-btn';
-      fwdBtn.textContent = '→';
-      fwdBtn.title = 'Forward';
-      fwdBtn.disabled = true;
-      fwdBtn.addEventListener('click', () => {
-        if (historyIndex < navHistory.length - 1) {
-          historyIndex += 1;
-          openUrl(navHistory[historyIndex], { recordHistory: false });
-        }
-      });
-
-      reloadBtn = document.createElement('button');
-      reloadBtn.className = 'browser-btn';
-      reloadBtn.textContent = '⟳';
-      reloadBtn.title = 'Reload';
-      reloadBtn.addEventListener('click', () => openUrl(currentUrl, { recordHistory: false }));
-
-      homeBtn = document.createElement('button');
-      homeBtn.className = 'browser-btn';
-      homeBtn.textContent = '⌂';
-      homeBtn.title = 'Home';
-      homeBtn.addEventListener('click', () => openUrl(HOME_URL));
-
-      urlInput = document.createElement('input');
-      urlInput.type = 'text';
-      urlInput.className = 'browser-url';
-      urlInput.placeholder = 'Search or enter address';
-      urlInput.value = currentUrl;
-      urlInput.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          urlInput.blur();
-          openUrl(urlInput.value);
-        } else if (event.key === 'Escape') {
-          urlInput.value = currentUrl;
-          urlInput.blur();
-        }
-      });
-      // Standard address-bar behavior: clicking in selects everything, so
-      // typing a new URL doesn't require manually clearing the old one.
-      urlInput.addEventListener('focus', () => urlInput.select());
-
-      goBtn = document.createElement('button');
-      goBtn.className = 'browser-btn browser-go';
-      goBtn.textContent = 'Go';
-      goBtn.addEventListener('click', () => openUrl(urlInput.value));
-
-      toolbar.append(backBtn, fwdBtn, reloadBtn, homeBtn, urlInput, goBtn);
-
-      progressEl = document.createElement('div');
-      progressEl.className = 'browser-progress';
-
-      viewportEl = document.createElement('div');
-      viewportEl.className = 'browser-viewport';
-      viewportEl.style.flex = '1 1 auto';
-      viewportEl.style.height = '100%';
-      viewportEl.style.minHeight = '0';
-      viewportEl.style.display = 'block';
-
-      statusEl = document.createElement('div');
-      statusEl.className = 'browser-status';
-
-      container.append(toolbar, progressEl, viewportEl, statusEl);
-
-      if (!hasWebviewAPI) {
-        viewportEl.innerHTML =
-          '<p class="browser-error">Native webview API is not available.<br>' +
-          'Make sure this mod has the <code>webview.access</code> permission in its ' +
-          '<code>mod.json</code> and you\'re running the Electron desktop build.</p>';
+    async function wake(tab) {
+      if (tab.view || tab.waking || !tab.url) return;
+      tab.waking = true;
+      tab.error = '';
+      patchTab(tab);
+      try {
+        await gate(tab);
+      } catch (err) {
+        tab.waking = false;
+        tab.error = `This page can't be opened: ${err.message || err}`;
+        patchTab(tab);
+        syncToolbar();
         return;
       }
+      tab.waking = false;
+      if (tab.view || !tabs.includes(tab)) return;
 
-      const resizeObserver = new ResizeObserver(() => {
-        if (shouldBeVisible(container)) reposition();
-      });
-      resizeObserver.observe(viewportEl);
-      window.addEventListener('resize', () => {
-        if (shouldBeVisible(container)) reposition();
-      });
+      const view = document.createElement('webview');
+      view.className = 'br-view';
+      view.setAttribute('partition', PARTITION);
+      view.setAttribute('src', tab.url);
 
-      // The tab view is created once and then just toggled via inline
-      // style.display on every subsequent switch (see site.js) — this
-      // observer is what lets us show/hide the native webview (which floats
-      // independent of the DOM) in sync with that.
-      const visibilityObserver = new MutationObserver(() => {
-        if (!shouldBeVisible(container)) {
-          if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, false).catch(() => {});
-        } else {
-          reposition();
-          if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, true).catch(() => {});
-        }
+      let titleFrame = 0;
+      view.addEventListener('page-title-updated', (e) => {
+        tab.title = e.title || '';
+        if (!titleFrame) titleFrame = requestAnimationFrame(() => { titleFrame = 0; patchTab(tab); });
+        persist();
       });
-      visibilityObserver.observe(container, { attributes: true, attributeFilter: ['style'] });
+      const onNavigate = (e) => {
+        if (e.isMainFrame === false) return;
+        tab.url = e.url;
+        if (tab.id === activeId) syncToolbar();
+        persist();
+      };
+      view.addEventListener('did-navigate', onNavigate);
+      view.addEventListener('did-navigate-in-page', onNavigate);
+      view.addEventListener('did-start-loading', () => { tab.loading = true; if (tab.id === activeId) syncToolbar(); });
+      view.addEventListener('did-stop-loading', () => { tab.loading = false; if (tab.id === activeId) syncToolbar(); });
+      view.addEventListener('dom-ready', () => { if (tab.id === activeId) syncToolbar(); });
+      view.addEventListener('media-started-playing', () => { tab.audible = true; patchTab(tab); });
+      view.addEventListener('media-paused', () => { tab.audible = false; patchTab(tab); });
 
-      // site.js dispatches these around any overlay widget (Settings,
-      // Login) opening/closing. Since a native webview always composites
-      // above regular DOM content regardless of z-index, hiding is the
-      // only way to keep it from covering a transparent overlay panel.
-      document.addEventListener('mods:overlay-opened', () => {
-        overlayOpen = true;
-        if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, false).catch(() => {});
-      });
-      document.addEventListener('mods:overlay-closed', () => {
-        overlayOpen = false;
-        if (shouldBeVisible(container)) {
-          reposition();
-          if (hasWebview) window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, true).catch(() => {});
-        }
-      });
+      stack.appendChild(view);
+      tab.view = view;
+      applyStacking();
+      patchTab(tab);
+      syncToolbar();
+      enforceCap();
+    }
 
-      updateNavButtons();
-      openUrl(currentUrl, { recordHistory: navHistory.length === 0 });
+    function sleep(tab) {
+      if (!tab.view) return;
+      tab.view.remove();
+      tab.view = null;
+      tab.loading = false;
+      tab.audible = false;
+      patchTab(tab);
+    }
+
+    function enforceCap() {
+      for (;;) {
+        const live = tabs.filter((t) => t.view);
+        if (live.length <= MAX_LIVE) return;
+        const candidates = live
+          .filter((t) => t.id !== activeId && !t.audible)
+          .sort((a, b) => a.lastActive - b.lastActive);
+        if (!candidates.length) return;
+        sleep(candidates[0]);
+      }
+    }
+
+    setInterval(() => {
+      const now = Date.now();
+      for (const t of tabs) {
+        if (t.view && t.id !== activeId && !t.audible && now - t.lastActive > IDLE_SLEEP_MS) sleep(t);
+      }
+    }, SWEEP_MS);
+
+    // ---- actions
+
+    function select(id) {
+      const tab = tabs.find((t) => t.id === id);
+      if (!tab) return;
+      activeId = id;
+      tab.lastActive = Date.now();
+      wake(tab);
+      applyStacking();
+      enforceCap();
+      renderTabs();
+      syncToolbar();
+      persist();
+    }
+
+    function addTab(url = '') {
+      const tab = makeTab(url);
+      tabs.push(tab);
+      select(tab.id);
+      if (!url) urlInput.focus();
+    }
+
+    function closeTab(id) {
+      const index = tabs.findIndex((t) => t.id === id);
+      if (index === -1) return;
+      const [tab] = tabs.splice(index, 1);
+      sleep(tab);
+      if (!tabs.length) tabs.push(makeTab());
+      if (activeId === id) select(tabs[Math.min(index, tabs.length - 1)].id);
+      else { renderTabs(); persist(); }
+    }
+
+    function go(input) {
+      const tab = active();
+      const url = toUrl(input);
+      if (!tab || !url) return;
+      tab.url = url;
+      tab.title = '';
+      if (tab.view) {
+        Promise.resolve(tab.view.loadURL(url)).catch(() => { /* navigation aborted or superseded */ });
+      } else {
+        wake(tab);
+      }
+      patchTab(tab);
+      syncToolbar();
+      persist();
+    }
+
+    // ---- wiring
+
+    addBtn.addEventListener('click', () => addTab());
+    backBtn.addEventListener('click', () => { try { active()?.view?.goBack(); } catch { /* ignore */ } });
+    forwardBtn.addEventListener('click', () => { try { active()?.view?.goForward(); } catch { /* ignore */ } });
+    reloadBtn.addEventListener('click', () => {
+      const tab = active();
+      if (!tab?.view) return;
+      if (tab.loading) tab.view.stop(); else tab.view.reload();
+    });
+    urlInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { go(urlInput.value); urlInput.blur(); }
+      else if (event.key === 'Escape') { urlInput.value = active()?.url || ''; urlInput.blur(); }
+    });
+    urlInput.addEventListener('focus', () => urlInput.select());
+    urlInput.addEventListener('blur', syncToolbar);
+
+    // ---- restore: every tab starts asleep, only the active one loads
+
+    store.load().then((data) => {
+      const saved = Array.isArray(data?.tabs)
+        ? data.tabs.filter((t) => t && typeof t.id === 'string')
+        : [];
+      tabs = saved.map((t) => makeTab(
+        typeof t.url === 'string' ? t.url : '',
+        typeof t.title === 'string' ? t.title : '',
+        t.id,
+      ));
+      if (!tabs.length) tabs = [makeTab()];
+      select(tabs.some((t) => t.id === data?.activeId) ? data.activeId : tabs[0].id);
+    });
+
+    return root;
+  }
+
+  ModAPI.registerTab({
+    id: 'browser',
+    label: 'Browser',
+    icon: 'language',
+    render(container) {
+      const node = build();
+      // Moving a <webview> in the DOM reloads its page, so only attach when needed.
+      if (node.parentNode !== container) container.replaceChildren(node);
     },
   });
 })();

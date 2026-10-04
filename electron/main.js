@@ -308,16 +308,6 @@ ipcMain.handle('webview:close', (_event, { modId }) => {
   return true;
 });
 
-ipcMain.handle('webview:setVisible', (_event, { modId, instance, visible }) => {
-  requirePermission(modId, 'webview.access');
-  return true;
-});
-
-ipcMain.handle('webview:setBounds', (_event, { modId }) => {
-  requirePermission(modId, 'webview.access');
-  return true;
-});
-
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
