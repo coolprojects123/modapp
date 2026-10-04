@@ -64,7 +64,8 @@
   // ---------------------------------------------------------------- storage
 
   function createStore() {
-    const fs = ModAPI.native?.fs?.forMod?.(MOD_ID);
+    // Each mod automatically uses its own ID - no forMod() needed
+    const fs = ModAPI.native?.fs;
     if (fs) {
       return {
         async load() {
@@ -87,9 +88,10 @@
   }
 
   // The main process checks the permission, that the mod is enabled, and that the URL is http(s).
+  // Each mod automatically uses its own ID - no need to pass MOD_ID
   async function gate(tab) {
     const api = window.electronAPI?.webview;
-    if (api?.create) await api.create(MOD_ID, tab.id, tab.url);
+    if (api?.create) await api.create(tab.id, tab.url);
   }
 
   // ------------------------------------------------------------------- build

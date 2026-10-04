@@ -172,20 +172,23 @@ function discoverMods() {
 // ============================================================
 // Settings and Mod Management
 // ============================================================
-ipcMain.handle('settings:read', (_event, { modId }) => {
-  requireEnabledPermission(modId, 'settings.read');
+ipcMain.handle('settings:read', (event, { modId }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'settings.read');
   return { ...defaultSettings, ...readJson(settingsPath, {}) };
 });
-ipcMain.handle('settings:write', (_event, { modId, changes }) => {
-  requireEnabledPermission(modId, 'settings.write');
+ipcMain.handle('settings:write', (event, { modId, changes }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'settings.write');
   const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
   writeJson(settingsPath, settings);
   return settings;
 });
 
 ipcMain.handle('mods:list', () => discoverMods());
-ipcMain.handle('mods:toggle', (_event, { modId, id }) => {
-  requireEnabledPermission(modId, 'mods.toggle');
+ipcMain.handle('mods:toggle', (event, { modId, id }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.toggle');
   const mod = discoverMods().find((item) => item.id === id);
   if (!mod || mod.core) return mod ? mod.enabled : false;
   const config = readJson(configPath, {});
@@ -299,11 +302,12 @@ for (const [operation, method] of [
   ['exists', 'exists'], ['resolvePath', 'resolvePath'], ['toFileUrl', 'toFileUrl'], ['removeFile', 'removeFile'],
   ['removeDir', 'removeDir'], ['move', 'move'],
 ]) {
-  ipcMain.handle(`fs:${operation}`, (_event, { modId, path: filePath, from, to, content }) => {
+  ipcMain.handle(`fs:${operation}`, (event, { modId, path: filePath, from, to, content }) => {
+    const callerModId = validateModContext(event, modId);
     try {
-      if (operation === 'move') return modFilesystem[method](modId, from, to);
-      if (operation === 'writeFile' || operation === 'writeBytes') return modFilesystem[method](modId, filePath, content);
-      return modFilesystem[method](modId, filePath);
+      if (operation === 'move') return modFilesystem[method](callerModId, from, to);
+      if (operation === 'writeFile' || operation === 'writeBytes') return modFilesystem[method](callerModId, filePath, content);
+      return modFilesystem[method](callerModId, filePath);
     } catch (error) {
       // A missing file is a normal answer (first run, optional config). Throwing from an ipcMain handler makes
       // Electron print a stack trace for every one, so hand it to preload.js, which rethrows it in the renderer.
@@ -318,9 +322,11 @@ for (const [operation, method] of [
 // so CSS containment and stacking work; these IPC handlers remain the
 // permission gate before the frontend creates or manages an element.
 // ============================================================
-ipcMain.handle('webview:create', (_event, { modId, url }) => {
-  requirePermission(modId, 'webview.access');
-  if (!modEnabled(modId)) throw new Error(`mod '${modId}' is disabled`);
+ipcMain.handle('webview:create', (event, { instance, url }) => {
+  const callerModId = getCallerModId(event);
+  if (!callerModId) throw new Error('No mod context for webview creation');
+  requirePermission(callerModId, 'webview.access');
+  if (!modEnabled(callerModId)) throw new Error(`mod '${callerModId}' is disabled`);
   const parsedUrl = new URL(url);
   if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
     throw new Error('only http(s) URLs can be opened in a mod webview');
@@ -328,8 +334,24 @@ ipcMain.handle('webview:create', (_event, { modId, url }) => {
   return true;
 });
 
-ipcMain.handle('webview:close', (_event, { modId }) => {
-  requirePermission(modId, 'webview.access');
+ipcMain.handle('webview:close', (event, { instance }) => {
+  const callerModId = getCallerModId(event);
+  if (!callerModId) throw new Error('No mod context for webview close');
+  requirePermission(callerModId, 'webview.access');
+  return true;
+});
+
+ipcMain.handle('webview:setVisible', (event, { instance, visible }) => {
+  const callerModId = getCallerModId(event);
+  if (!callerModId) throw new Error('No mod context for webview setVisible');
+  requirePermission(callerModId, 'webview.access');
+  return true;
+});
+
+ipcMain.handle('webview:setBounds', (event, { instance, x, y, width, height }) => {
+  const callerModId = getCallerModId(event);
+  if (!callerModId) throw new Error('No mod context for webview setBounds');
+  requirePermission(callerModId, 'webview.access');
   return true;
 });
 
@@ -437,12 +459,40 @@ app.on('activate', () => {
 
 const notificationTimes = new Map();
 
-ipcMain.handle('shell:run', (_event, { modId, command, cwd = '' }) => {
-  requireEnabledPermission(modId, 'shell.run');
+// Mod context tracking: maps frame IDs to mod IDs
+// This ensures mods can only use their own ID for API calls
+const modContexts = new Map(); // frameId -> modId
+
+function getCallerModId(event) {
+  // Get the frame ID from the IPC event
+  const frameId = event?.frameId || event?.sender?.frameId;
+  if (!frameId) return null;
+  
+  // Look up which mod this frame belongs to
+  return modContexts.get(frameId) || null;
+}
+
+function validateModContext(event, requestedModId) {
+  const callerModId = getCallerModId(event);
+  if (!callerModId) {
+    throw new Error(`cannot determine caller mod context`);
+  }
+  
+  // Ensure the requested modId matches the caller's modId
+  if (callerModId !== requestedModId) {
+    throw new Error(`mod '${callerModId}' cannot impersonate mod '${requestedModId}'`);
+  }
+  
+  return callerModId;
+}
+
+ipcMain.handle('shell:run', (event, { modId, command, cwd = '' }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'shell.run');
   if (typeof command !== 'string' || !command.trim() || Buffer.byteLength(command) > 64 * 1024) {
     throw new Error('shell.run needs a non-empty command smaller than 64 KiB');
   }
-  const workingDirectory = modFilesystem.resolvePath(modId, cwd || '');
+  const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   const executable = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
@@ -458,8 +508,9 @@ ipcMain.handle('shell:run', (_event, { modId, command, cwd = '' }) => {
   });
 });
 
-ipcMain.handle('net:fetch', async (_event, { modId, url }) => {
-  requireEnabledPermission(modId, 'net.fetch');
+ipcMain.handle('net:fetch', async (event, { modId, url }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'net.fetch');
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error('Invalid URL'); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('fetch_url: url must be http(s)');
@@ -474,21 +525,23 @@ ipcMain.handle('net:fetch', async (_event, { modId, url }) => {
   };
 });
 
-ipcMain.handle('notifications:send', (_event, { modId, title, body }) => {
-  requireEnabledPermission(modId, 'notifications.send');
+ipcMain.handle('notifications:send', (event, { modId, title, body }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'notifications.send');
   if (typeof title !== 'string' || !title.trim()) throw new Error('notification title must not be empty');
   if (title.length > 500 || String(body || '').length > 500) throw new Error('notification title/body is too long');
   const now = Date.now();
-  const recent = (notificationTimes.get(modId) || []).filter((timestamp) => now - timestamp < 60000);
-  if (recent.length >= 10) throw new Error(`mod '${modId}' is sending notifications too fast (max 10/min)`);
+  const recent = (notificationTimes.get(callerModId) || []).filter((timestamp) => now - timestamp < 60000);
+  if (recent.length >= 10) throw new Error(`mod '${callerModId}' is sending notifications too fast (max 10/min)`);
   recent.push(now);
-  notificationTimes.set(modId, recent);
+  notificationTimes.set(callerModId, recent);
   if (!Notification.isSupported()) throw new Error('OS notifications are not supported');
   new Notification({ title, body: String(body || '') }).show();
 });
 
-ipcMain.handle('dialog:pickFolder', async (_event, { modId, title, defaultDir }) => {
-  requireEnabledPermission(modId, 'dialog.pick');
+ipcMain.handle('dialog:pickFolder', async (event, { modId, title, defaultDir }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'dialog.pick');
   const result = await dialog.showOpenDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir || undefined,
@@ -497,8 +550,9 @@ ipcMain.handle('dialog:pickFolder', async (_event, { modId, title, defaultDir })
   return result.canceled ? null : result.filePaths[0] || null;
 });
 
-ipcMain.handle('dialog:pickFiles', async (_event, { modId, title, defaultDir, multiple }) => {
-  requireEnabledPermission(modId, 'dialog.pick');
+ipcMain.handle('dialog:pickFiles', async (event, { modId, title, defaultDir, multiple }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'dialog.pick');
   const result = await dialog.showOpenDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir || undefined,
@@ -507,8 +561,9 @@ ipcMain.handle('dialog:pickFiles', async (_event, { modId, title, defaultDir, mu
   return result.canceled ? [] : result.filePaths;
 });
 
-ipcMain.handle('dialog:pickSaveFile', async (_event, { modId, title, defaultDir, defaultName }) => {
-  requireEnabledPermission(modId, 'dialog.pick');
+ipcMain.handle('dialog:pickSaveFile', async (event, { modId, title, defaultDir, defaultName }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'dialog.pick');
   const result = await dialog.showSaveDialog(mainWindow, {
     title: title || undefined,
     defaultPath: defaultDir && defaultName ? path.join(defaultDir, defaultName) : (defaultDir || defaultName || undefined),
@@ -540,21 +595,23 @@ function ptySessionKey(modId, session) {
   return `${modId}:${session}`;
 }
 
-ipcMain.handle('pty:listShells', (_event, { modId }) => {
-  requireEnabledPermission(modId, 'pty.access');
+ipcMain.handle('pty:listShells', (event, { modId }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'pty.access');
   return availableShells().map(({ id, label }) => ({ id, label }));
 });
 
-ipcMain.handle('pty:spawn', (_event, { modId, session, shellId, cols, rows, cwd }) => {
-  requireEnabledPermission(modId, 'pty.access');
-  const key = ptySessionKey(modId, session);
+ipcMain.handle('pty:spawn', (event, { modId, session, shellId, cols, rows, cwd }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'pty.access');
+  const key = ptySessionKey(callerModId, session);
   if (ptySessions.has(key)) throw new Error('terminal session already exists');
-  if ([...ptySessions.keys()].filter((existing) => existing.startsWith(`${modId}:`)).length >= 16) {
+  if ([...ptySessions.keys()].filter((existing) => existing.startsWith(`${callerModId}:`)).length >= 16) {
     throw new Error('too many open terminal sessions');
   }
   const shell = availableShells().find((item) => item.id === shellId) || availableShells()[0];
   if (!shell) throw new Error('no supported shell was found');
-  const workingDirectory = modFilesystem.resolvePath(modId, cwd || '');
+  const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   const terminal = pty.spawn(shell.path, shell.args, {
     name: 'xterm-256color',
@@ -563,30 +620,33 @@ ipcMain.handle('pty:spawn', (_event, { modId, session, shellId, cols, rows, cwd 
     cwd: workingDirectory,
     env: process.env,
   });
-  ptySessions.set(key, { modId, session, terminal });
-  terminal.onData((data) => mainWindow?.webContents.send('pty:data', { modId, session, data }));
+  ptySessions.set(key, { modId: callerModId, session, terminal });
+  terminal.onData((data) => mainWindow?.webContents.send('pty:data', { modId: callerModId, session, data }));
   terminal.onExit(({ exitCode }) => {
     ptySessions.delete(key);
-    mainWindow?.webContents.send('pty:exit', { modId, session, exitCode });
+    mainWindow?.webContents.send('pty:exit', { modId: callerModId, session, exitCode });
   });
   return shell.label;
 });
 
-ipcMain.handle('pty:write', (_event, { modId, session, data }) => {
-  requireEnabledPermission(modId, 'pty.access');
-  const entry = ptySessions.get(ptySessionKey(modId, session));
+ipcMain.handle('pty:write', (event, { modId, session, data }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'pty.access');
+  const entry = ptySessions.get(ptySessionKey(callerModId, session));
   if (entry && typeof data === 'string' && Buffer.byteLength(data) <= 64 * 1024) entry.terminal.write(data);
 });
 
-ipcMain.handle('pty:resize', (_event, { modId, session, cols, rows }) => {
-  requireEnabledPermission(modId, 'pty.access');
-  const entry = ptySessions.get(ptySessionKey(modId, session));
+ipcMain.handle('pty:resize', (event, { modId, session, cols, rows }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'pty.access');
+  const entry = ptySessions.get(ptySessionKey(callerModId, session));
   if (entry) entry.terminal.resize(Math.max(1, Math.min(500, Number(cols) || 80)), Math.max(1, Math.min(300, Number(rows) || 24)));
 });
 
-ipcMain.handle('pty:kill', (_event, { modId, session }) => {
-  requirePermission(modId, 'pty.access');
-  const key = ptySessionKey(modId, session);
+ipcMain.handle('pty:kill', (event, { modId, session }) => {
+  const callerModId = validateModContext(event, modId);
+  requirePermission(callerModId, 'pty.access');
+  const key = ptySessionKey(callerModId, session);
   ptySessions.get(key)?.terminal.kill();
   ptySessions.delete(key);
 });

@@ -13,98 +13,90 @@
   };
 
   const fs = {
-    forMod(modId) {
-      assertId('mod id', modId);
-      const api = window.electronAPI.fs;
-      return {
-        ensureDir: (path) => api.ensureDir(modId, path),
-        readFile: (path) => api.readFile(modId, path),
-        readBytes: async (path) => new Uint8Array(await api.readBytes(modId, path)),
-        writeFile: (path, content) => api.writeFile(modId, path, content),
-        writeBytes: (path, bytes) => api.writeBytes(modId, path, bytes),
-        readDir: (path = '') => api.readDir(modId, path),
-        listDir: (path = '') => api.readDir(modId, path),
-        exists: (path) => api.exists(modId, path),
-        resolvePath: (path) => api.resolvePath(modId, path),
-        toFileUrl: (path) => api.toFileUrl(modId, path),
-        removeFile: (path) => api.removeFile(modId, path),
-        removeDir: (path) => api.removeDir(modId, path),
-        move: (from, to) => api.move(modId, from, to),
-      };
-    },
+    // Each mod automatically uses its own ID - no forMod() needed
+    ensureDir: (path) => window.electronAPI.fs.ensureDir(path),
+    readFile: (path) => window.electronAPI.fs.readFile(path),
+    readBytes: async (path) => new Uint8Array(await window.electronAPI.fs.readBytes(path)),
+    writeFile: (path, content) => window.electronAPI.fs.writeFile(path, content),
+    writeBytes: (path, bytes) => window.electronAPI.fs.writeBytes(path, bytes),
+    readDir: (path = '') => window.electronAPI.fs.readDir(path),
+    listDir: (path = '') => window.electronAPI.fs.readDir(path),
+    exists: (path) => window.electronAPI.fs.exists(path),
+    resolvePath: (path) => window.electronAPI.fs.resolvePath(path),
+    toFileUrl: (path) => window.electronAPI.fs.toFileUrl(path),
+    removeFile: (path) => window.electronAPI.fs.removeFile(path),
+    removeDir: (path) => window.electronAPI.fs.removeDir(path),
+    move: (from, to) => window.electronAPI.fs.move(from, to),
   };
-  Object.assign(fs, fs.forMod('music-player'));
 
   const settings = {
-    read: () => window.electronAPI?.readSettings ? window.electronAPI.readSettings('core') : unavailable(),
-    write: (changes) => window.electronAPI?.writeSettings ? window.electronAPI.writeSettings('core', changes) : unavailable(),
+    // Each mod automatically uses its own ID
+    read: () => window.electronAPI?.readSettings ? window.electronAPI.readSettings() : unavailable(),
+    write: (changes) => window.electronAPI?.writeSettings ? window.electronAPI.writeSettings(changes) : unavailable(),
   };
   const mods = {
     list: () => window.electronAPI?.listMods ? window.electronAPI.listMods() : unavailable(),
-    toggle: (modId) => window.electronAPI?.toggleMod ? window.electronAPI.toggleMod('core', modId) : unavailable(),
+    toggle: (id) => window.electronAPI?.toggleMod ? window.electronAPI.toggleMod(id) : unavailable(),
   };
   const shell = {
-    forMod(modId) {
-      assertId('mod id', modId);
-      return { run: (command, cwd = '') => window.electronAPI?.shell ? window.electronAPI.shell.run(modId, command, cwd) : unavailable() };
-    },
-    run: (command, cwd = '') => shell.forMod('ide').run(command, cwd),
+    // Each mod automatically uses its own ID - no forMod() needed
+    run: (command, cwd = '') => window.electronAPI?.shell ? window.electronAPI.shell.run(command, cwd) : unavailable(),
   };
   const net = {
-    fetch: (modId, url) => {
-      assertId('mod id', modId);
-      return window.electronAPI?.net ? window.electronAPI.net.fetch(modId, url) : unavailable();
-    },
+    // Each mod automatically uses its own ID
+    fetch: (url) => window.electronAPI?.net ? window.electronAPI.net.fetch(url) : unavailable(),
   };
   const notifications = {
-    send: (modId, title, body = '') => {
-      assertId('mod id', modId);
-      return window.electronAPI?.notifications ? window.electronAPI.notifications.send(modId, title, body) : unavailable();
-    },
+    // Each mod automatically uses its own ID
+    send: (title, body = '') => window.electronAPI?.notifications ? window.electronAPI.notifications.send(title, body) : unavailable(),
   };
   const dialog = {
-    pickFolder: (modId, options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickFolder(modId, options) : unavailable(),
-    pickFiles: (modId, options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickFiles(modId, options) : unavailable(),
-    pickSaveFile: (modId, options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickSaveFile(modId, options) : unavailable(),
+    // Each mod automatically uses its own ID
+    pickFolder: (options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickFolder(options) : unavailable(),
+    pickFiles: (options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickFiles(options) : unavailable(),
+    pickSaveFile: (options = {}) => window.electronAPI?.dialog ? window.electronAPI.dialog.pickSaveFile(options) : unavailable(),
   };
-  const pty = {
-    forMod(modId) {
-      assertId('mod id', modId);
-      const api = window.electronAPI?.pty;
-      if (!api) return { shells: unavailable, open: unavailable, write: unavailable, resize: unavailable };
-      return {
-        shells: () => api.listShells(modId),
-        async open({ shell: shellId, cols, rows, cwd, onData, onExit }) {
-          const random = new Uint8Array(16);
-          crypto.getRandomValues(random);
-          const session = Array.from(random, (byte) => byte.toString(16).padStart(2, '0')).join('');
-          const listenerId = api.listen(modId, session, onData, onExit);
-          try {
-            const label = await api.spawn({ modId, session, shellId: shellId || null, cols, rows, cwd: cwd || null });
-            return {
-              session,
-              label,
-              close: async () => {
-                api.unlisten(listenerId);
-                await api.kill(modId, session).catch(() => {});
-              },
-            };
-          } catch (error) {
-            api.unlisten(listenerId);
-            throw error;
-          }
-        },
-        write: (session, data) => api.write(modId, session, data),
-        resize: (session, cols, rows) => api.resize(modId, session, cols, rows),
-      };
-    },
-  };
+  // PTY API - Each mod automatically uses its own ID - no forMod() needed
+  // This creates a factory that returns the PTY API for the current mod
+  function createPtyApi() {
+    const api = window.electronAPI?.pty;
+    if (!api) return { shells: unavailable, open: unavailable, write: unavailable, resize: unavailable };
+    return {
+      shells: () => api.listShells(),
+      async open({ shell: shellId, cols, rows, cwd, onData, onExit }) {
+        const random = new Uint8Array(16);
+        crypto.getRandomValues(random);
+        const session = Array.from(random, (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const listenerId = api.listen(session, onData, onExit);
+        try {
+          const label = await api.spawn({ session, shellId: shellId || null, cols, rows, cwd: cwd || null });
+          return {
+            session,
+            label,
+            close: async () => {
+              api.unlisten(listenerId);
+              await api.kill(session).catch(() => {});
+            },
+          };
+        } catch (error) {
+          api.unlisten(listenerId);
+          throw error;
+        }
+      },
+      write: (session, data) => api.write(session, data),
+      resize: (session, cols, rows) => api.resize(session, cols, rows),
+    };
+  }
+  const pty = createPtyApi();
   const updates = {
     check: () => window.electronAPI?.checkForUpdates ? window.electronAPI.checkForUpdates() : unavailable(),
     install: () => window.electronAPI?.installUpdate ? window.electronAPI.installUpdate() : unavailable(),
   };
   const webviews = new Map();
-  const webviewKey = (modId, instance) => `${modId}:${instance}`;
+  const webviewKey = (instance) => {
+    const modId = window.modContext?.getModId?.() || 'core';
+    return `${modId}:${instance}`;
+  };
   function normalizeWebviewSpec(arg, fallback = {}) {
     if (arg && typeof arg === 'object' && !Array.isArray(arg) && 'url' in arg) {
       return arg;
@@ -115,7 +107,8 @@
     return { ...fallback };
   }
   const webview = {
-    async create(modId, instance, arg1, arg2, arg3, arg4, arg5, arg6) {
+    async create(instance, arg1, arg2, arg3, arg4, arg5, arg6) {
+      const modId = getCurrentModId();
       const spec = normalizeWebviewSpec(arg1, {
         x: arg2,
         y: arg3,
@@ -124,15 +117,14 @@
         container: arg6,
       });
       const { url, container } = spec;
-      assertId('mod id', modId);
       assertId('webview instance', instance);
       assertWebUrl(url);
       if (!(container instanceof HTMLElement)) throw new Error('An HTML container is required for an Electron webview.');
-      const key = webviewKey(modId, instance);
+      const key = webviewKey(instance);
       if (webviews.has(key)) throw new Error(`webview '${key}' already exists`);
       // Permission check / registration only. Sizing is left to CSS: the tab
       // view is display:none while render() runs, so measuring it here gives 0.
-      await window.electronAPI.webview.create(modId, instance, url);
+      await window.electronAPI.webview.create({ instance, url });
       const element = document.createElement('webview');
       element.className = 'mod-native-webview';
       element.setAttribute('partition', `persist:mod-${modId}`);
@@ -141,20 +133,23 @@
       container.appendChild(element);
       webviews.set(key, element);
     },
-    async close(modId, instance) {
-      await window.electronAPI.webview.close(modId, instance);
-      webviews.get(webviewKey(modId, instance))?.remove();
-      webviews.delete(webviewKey(modId, instance));
+    async close(instance) {
+      const modId = window.modContext?.getModId?.() || 'core';
+      await window.electronAPI.webview.close({ instance });
+      webviews.get(webviewKey(instance))?.remove();
+      webviews.delete(webviewKey(instance));
     },
-    async setVisible(modId, instance, visible) {
-      await window.electronAPI.webview.setVisible(modId, instance, visible);
-      const element = webviews.get(webviewKey(modId, instance));
+    async setVisible(instance, visible) {
+      const modId = window.modContext?.getModId?.() || 'core';
+      await window.electronAPI.webview.setVisible({ instance, visible });
+      const element = webviews.get(webviewKey(instance));
       if (element) element.style.visibility = visible ? 'visible' : 'hidden';
     },
-    async setBounds(modId, instance, arg1, arg2, arg3, arg4) {
+    async setBounds(instance, arg1, arg2, arg3, arg4) {
+      const modId = window.modContext?.getModId?.() || 'core';
       // Only applied when a mod explicitly asks for a fixed rect; otherwise
       // the webview keeps filling its host via CSS.
-      const element = webviews.get(webviewKey(modId, instance));
+      const element = webviews.get(webviewKey(instance));
       if (element && [arg1, arg2, arg3, arg4].every((v) => typeof v === 'number')) {
         element.style.inset = 'auto';
         element.style.left = `${arg1}px`;
@@ -162,7 +157,7 @@
         element.style.width = `${arg3}px`;
         element.style.height = `${arg4}px`;
       }
-      await window.electronAPI.webview.setBounds(modId, instance, arg1, arg2, arg3, arg4);
+      await window.electronAPI.webview.setBounds({ instance, x: arg1, y: arg2, width: arg3, height: arg4 });
     },
   };
 

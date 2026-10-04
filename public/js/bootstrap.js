@@ -200,6 +200,8 @@ async function loadMods() {
       if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
+      // Set the current mod context for permission isolation
+      if (window.modContext) window.modContext.setModId(mod.id);
       try {
         await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
       } catch (err) {
@@ -225,6 +227,8 @@ async function loadMods() {
       if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
+      // Set the current mod context for permission isolation
+      if (window.modContext) window.modContext.setModId(mod.id);
       try {
         await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
       } catch (err) {
@@ -232,6 +236,9 @@ async function loadMods() {
       }
     }
   }
+  
+  // Reset to core for any non-mod code
+  if (window.modContext) window.modContext.setModId('core');
   window.ModAPI._setModId(null);
   window.ModAPI._setModAssetBase(null);
 

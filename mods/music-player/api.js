@@ -6,8 +6,8 @@ ModAPI.music = {
   async getFilesystem() {
     if (window.nativeAPIReady) await window.nativeAPIReady;
     const native = window.nativeAPI || ModAPI.native;
-    if (native?.fs?.forMod) return native.fs.forMod('music-player');
-    return native?.fs
+    // Each mod automatically uses its own ID - no forMod() needed
+    return native?.fs;
   },
 
   async getFileUrl(filePath) {

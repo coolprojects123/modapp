@@ -39,8 +39,8 @@
     { id: 'agenda', label: 'Agenda', key: 'a' },
   ];
 
-  const nativeFs = window.ModAPI.native.fs;
-  const fs = nativeFs && nativeFs.forMod ? nativeFs.forMod(MOD_ID) : null;
+  // Each mod automatically uses its own ID - no forMod() needed
+  const fs = window.ModAPI.native?.fs;
   let SCHEME = 'dark';
 
   // ---------------------------------------------------------------- storage
@@ -184,7 +184,8 @@
   async function fetchSourceText(source) {
     const url = normalizeUrl(source.url);
     validateUrl(url);
-    const result = await window.ModAPI.native.net.fetch(MOD_ID, url);
+    // Each mod automatically uses its own ID - no need to pass MOD_ID
+    const result = await window.ModAPI.native.net.fetch(url);
     if (result.code !== 0) throw new Error(`Calendar fetch failed (${result.code}): ${result.stderr}`);
     const text = result.stdout;
     await assertFs().writeFile(`cache-${source.id}.ics`, text);
@@ -209,7 +210,8 @@
     if (!due.length) return;
     try {
       for (const event of due) {
-        await window.ModAPI.native.notifications.send(MOD_ID, event.title, event.start.toLocaleTimeString());
+        // Each mod automatically uses its own ID - no need to pass MOD_ID
+        await window.ModAPI.native.notifications.send(event.title, event.start.toLocaleTimeString());
       }
     } catch (err) {
       console.warn('[calendar] reminder failed:', err);

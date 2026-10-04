@@ -20,18 +20,18 @@
     "test": "node --test electron/*.test.js"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9",
-    "node-pty": "^1.1.0"
+    "electron-updater": "^6.8.10",
+    "node-pty": "^1.1.1"
   },
   "devDependencies": {
-    "electron": "git+https://github.com/castlabs/electron-releases.git#v44.1.0+wvcus",
+    "electron": "git+https://github.com/castlabs/electron-releases.git#v44.2.0+wvcus",
     "electron-builder": "^26.15.3"
   },
   "allowScripts": {
-    "electron@44.1.0": true,
+    "electron@44.2.0": true,
     "electron-builder@26.15.3": true,
     "electron-winstaller": true,
-    "node-pty@1.1.0": true
+    "node-pty@1.1.1": true
   },
   "build": {
     "appId": "com.modapp.desktop",

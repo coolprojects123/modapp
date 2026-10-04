@@ -4,7 +4,7 @@
  * - One tab per note. Tab titles come from the note's first line; double-click
  *   (or press F2) to give a tab its own name.
  * - Everything autosaves to notes.json in the mod's own data directory
- *   (ModAPI.native.fs.forMod, no extra permission needed), including which tabs
+ *   (ModAPI.native.fs - no extra permission needed), including which tabs
  *   are open and which one was active. Falls back to localStorage in browser-only mode.
  * - Notes from the first version of this mod (notes.txt) are imported as the first tab.
  * - Closing a tab can be undone for a few seconds.
@@ -29,7 +29,8 @@
   // ---------------------------------------------------------------- storage
 
   function createStore() {
-    const fs = ModAPI.native?.fs?.forMod?.(MOD_ID);
+    // Each mod automatically uses its own ID - no forMod() needed
+    const fs = ModAPI.native?.fs;
     if (fs) {
       return {
         async load() {

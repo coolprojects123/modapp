@@ -1,6 +1,7 @@
 /**
  * IDE API
  * Uses the centralized ModAPI.native.shell API
+ * Each mod automatically uses its own ID - no forMod() needed
  */
 ModAPI.ide = {
   /**
@@ -10,8 +11,8 @@ ModAPI.ide = {
    * @returns {Promise<{code: number, stdout: string, stderr: string}>}
    */
   async runCommand(command, cwd = '') {
-    if (ModAPI.native?.shell?.forMod) {
-      return await ModAPI.native.shell.forMod('ide').run(command, cwd);
+    if (ModAPI.native?.shell?.run) {
+      return await ModAPI.native.shell.run(command, cwd);
     }
     
     // Browser mode - no shell access
@@ -30,9 +31,9 @@ ModAPI.ide = {
   },
 };
 // Interactive terminals and native file pickers use explicit permissioned APIs.
+// Each mod automatically uses its own ID - no forMod() needed
 (function () {
-  const MOD_ID = 'ide';
-  const pty = ModAPI.native.pty.forMod(MOD_ID);
+  const pty = ModAPI.native.pty;
 
   ModAPI.ide.pty = {
     /** @returns {Promise<{id: string, label: string}[]>} default shell first */
@@ -52,13 +53,13 @@ ModAPI.ide = {
   /** Native OS pickers (needs the "dialog.pick" permission). Cancelling resolves to null / []. */
   ModAPI.ide.dialog = {
     pickFolder({ title, defaultDir } = {}) {
-      return ModAPI.native.dialog.pickFolder(MOD_ID, { title, defaultDir });
+      return ModAPI.native.dialog.pickFolder({ title, defaultDir });
     },
     pickFiles({ title, defaultDir, multiple = true } = {}) {
-      return ModAPI.native.dialog.pickFiles(MOD_ID, { title, defaultDir, multiple });
+      return ModAPI.native.dialog.pickFiles({ title, defaultDir, multiple });
     },
     pickSaveFile({ title, defaultDir, defaultName } = {}) {
-      return ModAPI.native.dialog.pickSaveFile(MOD_ID, { title, defaultDir, defaultName });
+      return ModAPI.native.dialog.pickSaveFile({ title, defaultDir, defaultName });
     },
   };
 })();

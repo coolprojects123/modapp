@@ -3,7 +3,7 @@
  * Lets you recolor (palette or any custom color) and rename each calendar:
  * "My events" (manual) and every synced source, plus remove a source.
  * Reads/writes the same sources.json and prefs.json files js/tab.js
- * already owns, via the same fs.forMod('calendar') sandbox -- no separate
+ * already owns, via the same fs sandbox -- no separate
  * settings.json, so there's only one place calendar data lives.
  *
  * NOTE: keeps its own small copies of the file read/write helpers and the
@@ -17,8 +17,8 @@
   const DEFAULT_MANUAL_COLOR = '#4caf6a'; // must match tab.js's MANUAL_CAL default
   const PALETTE = ['#5a8cff', '#e5a23c', '#b26be0', '#2fb8b0', '#e97a4b', '#e5484d', '#8a8f98'];
 
-  const nativeFs = window.ModAPI.native.fs;
-  const fs = nativeFs && nativeFs.forMod ? nativeFs.forMod(MOD_ID) : null;
+  // Each mod automatically uses its own ID - no forMod() needed
+  const fs = window.ModAPI.native?.fs;
 
   async function readJson(name, fallback) {
     if (!fs) return fallback;

@@ -12,7 +12,7 @@
  *
  * That's the whole API. No field schemas, no built-in persistence, no
  * grouping, no "go to this section" wiring -- your render(container) owns
- * its own UI and its own saving (e.g. via ModAPI.native.fs.forMod(yourModId),
+ * its own UI and its own saving (e.g. via ModAPI.native.fs),
  * the same way calendar's own settings.js does).
  */
 (function () {
