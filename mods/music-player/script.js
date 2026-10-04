@@ -657,7 +657,7 @@ function mountStreamingView(container) {
   }
 
   // Hide the streaming webview while overlays are open so it doesn't show
-  // through Settings or Login.
+  // through Settings.
   let overlayOpen = false;
   document.addEventListener('mods:overlay-opened', () => { overlayOpen = true; syncVisibility(); });
   document.addEventListener('mods:overlay-closed', () => { overlayOpen = false; syncVisibility(); });

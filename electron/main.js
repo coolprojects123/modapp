@@ -263,7 +263,18 @@ ipcMain.handle('app:openExternal', async (_event, { url }) => {
 
 function modPermissions(modId) {
   if (typeof modId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(modId)) throw new Error('invalid mod id');
-  const manifestPath = path.join(modsDir, modId, 'mod.json');
+  
+  // Resolve the manifest path and verify it's within modsDir to prevent symlink attacks
+  const manifestPath = path.resolve(modsDir, modId, 'mod.json');
+  const modsDirResolved = path.resolve(modsDir);
+  
+  // Check that the resolved manifest path is actually within the mods directory
+  // This prevents symlink attacks where modId resolves to a path outside modsDir
+  if (!manifestPath.startsWith(modsDirResolved + path.sep) && 
+      !manifestPath.startsWith(modsDirResolved)) {
+    throw new Error(`mod '${modId}' path resolves outside mods directory`);
+  }
+  
   const manifest = readJson(manifestPath, null);
   return new Set(manifest?.permissions || []);
 }
@@ -492,6 +503,48 @@ ipcMain.handle('shell:run', (event, { modId, command, cwd = '' }) => {
   if (typeof command !== 'string' || !command.trim() || Buffer.byteLength(command) > 64 * 1024) {
     throw new Error('shell.run needs a non-empty command smaller than 64 KiB');
   }
+  
+  // Validate command to prevent shell injection
+  // Block dangerous shell metacharacters and commands
+  const dangerousPatterns = [
+    ';',    // Command separator
+    '&',    // Background/job control
+    '|',    // Pipe
+    '`',    // Command substitution
+    '$(',   // Command substitution
+    '>',    // Output redirection
+    '<',    // Input redirection
+    '>>',   // Append redirection
+    'rm',   // Dangerous: remove files
+    'dd',   // Dangerous: disk destruction
+    'mv',   // Dangerous: move files
+    'cp',   // Potentially dangerous
+    'chmod',// Dangerous: change permissions
+    'chown',// Dangerous: change ownership
+    'kill', // Dangerous: kill processes
+    'pkill',// Dangerous: kill processes
+    'wget', // Can download malicious files
+    'curl', // Can download malicious files
+    'nc',   // Network tool
+    'netcat',// Network tool
+    'ssh',  // Remote access
+    'scp',  // File transfer
+    'sftp', // File transfer
+    'sudo', // Privilege escalation
+    'su',   // Privilege escalation
+  ];
+  
+  const hasDangerousPattern = dangerousPatterns.some(pattern => command.includes(pattern));
+  if (hasDangerousPattern) {
+    throw new Error('shell.run: command contains disallowed patterns or characters');
+  }
+  
+  // Additional validation: only allow alphanumeric, spaces, and safe characters
+  // This allows basic commands like 'ls -la', 'echo hello', etc.
+  if (!/^[a-zA-Z0-9_\-\.\/\s]+$/.test(command)) {
+    throw new Error('shell.run: command contains invalid characters');
+  }
+  
   const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   const executable = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';

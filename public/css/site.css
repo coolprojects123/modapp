@@ -297,7 +297,7 @@ pre { padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.6; }
   transform: translate(-50%, -50%);
 }
 
-/* Dialog-style chrome for centered/overlay panels (Settings, Login) — more
+/* Dialog-style chrome for centered/overlay panels (Settings) — more
    room, a real header treatment — vs. the compact utility-card look small
    widgets (like a counter) keep by default. */
 .floating-widget.modal {

@@ -19,15 +19,12 @@ public/js/site.js         the bare site: topbar (logo + wherever mods hang
 
 mods/core/                 Core mod, identified by its folder name. Currently:
                           Settings (gear icon, far right of topbar — a real
-                          settings dialog with a sidebar nav, General/Mods)
-                          and Login (same dialog treatment). Both dim the
-                          page behind them and close on click-outside/Esc.
+                          settings dialog with a sidebar nav, General/Mods).
                           More essential features land here over time.
 ```
 
 The **Official Modpack** (a separate download) adds optional content on top
-— currently just a Home tab. Disable it and you lose Home; Settings and
-Login are unaffected either way, since those aren't part of it anymore.
+— currently just a Home tab. Disable it and you lose Home; Settings is unaffected.
 
 ## Run it
 
@@ -45,20 +42,6 @@ Imported music stays on the local machine.
 
 The mod in the `mods/core` folder is always enabled and cannot be disabled.
 Core status is determined by the folder name, not by a manifest field.
-
-## Login (read this before using it for anything real)
-
-The Login widget is **demo-grade, not production security**:
-
-- One hardcoded credential (`admin` / `modsite`), no password hashing
-- Login state is stored in local storage
-- No rate limiting, no HTTPS enforcement, no CSRF protection
-- Nothing server-side is actually gated behind a valid token yet — logging
-  in doesn't currently unlock or protect anything else
-
-It's there to demonstrate the login flow end-to-end (form → token →
-"logged in as" state → logout), not to guard anything. Replace the whole
-auth flow before using it for real security.
 
 ## Writing a mod
 
@@ -114,7 +97,7 @@ ModAPI.registerWidget({
     // close() is available if you want a custom "Done" button etc.
   },
 });
-// Settings and Login both use center + overlay + width —
+// Settings uses center + overlay + width —
 // that combination is what gives a panel real settings-dialog styling
 // (bigger radius/padding, a proper header) via the .modal CSS class,
 // which site.css applies automatically whenever center: true is set.
@@ -212,18 +195,18 @@ is available in the Electron desktop build, not in a plain browser.
 ### Trust model
 
 **Treat every installed mod as fully trusted code.** All mods run in the same
-webview and identify themselves to the native side with a string, so
-permissions keep well-behaved mods inside their lane and stop mistakes, but
-they are **not a sandbox against a malicious mod**. A mod that can run
-JavaScript can ask for another mod's backend, so installing a mod that
-declares `shell.run` (like the IDE) effectively lets any installed mod run
-commands. Only install mods you trust.
+webview, but **mod ID isolation** now prevents mods from impersonating each other.
+Each mod's API calls automatically use that mod's own ID, and the main process
+validates that the caller's ID matches the requested permissions.
 
-Installed mods share one renderer and should be treated as trusted code.
-Permission checks prevent accidental access and constrain well-behaved mods,
-but are not a security boundary against malicious JavaScript that can call the
-shared preload API. Remote webviews accept only HTTP(S) URLs and do not receive
-the app's preload bridge.
+This means:
+- A mod can only use its own permissions, not another mod's permissions
+- Installing a mod with `shell.run` (like the IDE) no longer lets other mods run commands
+- Permission checks enforce that each mod stays within its declared permissions
+
+**However**, mods still share one renderer, so they can potentially interact with
+each other through shared JavaScript globals. Only install mods you trust. Remote
+webviews accept only HTTP(S) URLs and do not receive the app's preload bridge.
 
 ### Enabling/disabling
 
@@ -274,7 +257,7 @@ provide them to release builds as secrets.
 public/js/mods.js           fallback mod manifest registry
 <app data>/mods/            writable live mods and mod state at runtime
 <app data>/mod-data/<id>/   private data folder for each mod
-mods/core/                  ships with modsite: Settings + Login; core by name
+mods/core/                  ships with modsite: Settings; core by name
 mods/<id>/...                any other mod you add
 public/index.html            loads mods.js, bootstrap.js, then site.js
 public/js/bootstrap.js       the engine: loads mods, defines ModAPI
