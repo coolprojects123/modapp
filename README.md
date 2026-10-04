@@ -1,6 +1,6 @@
 # modapp
 
-**v1.0.0** · Publisher: Akhilesh Gollapudi · [github.com/coolprojects123/modapp](https://github.com/coolprojects123/modapp)
+**v2.2.0** · Publisher: Akhilesh Gollapudi · [github.com/coolprojects123/modapp](https://github.com/coolprojects123/modapp)
 
 A lightweight desktop app where the bare engine is genuinely bare — a topbar
 and blank space, nothing else — and everything visible comes from mods. The
@@ -127,6 +127,11 @@ ModAPI.overrideTab('my-tab', (container) => { container.innerHTML = '<h1>Differe
 ModAPI.onTabActivate('my-tab', (container) => { container.insertAdjacentHTML('beforeend', '<p>added on top</p>'); });
 ```
 
+`ModAPI.renderMarkdown(text)` returns safe HTML for a markdown string, and
+`ModAPI.setMarkdown(element, text)` renders it into an element (links open in
+the system browser). Raw HTML in the text is escaped, and only `http`, `https`
+and `mailto` links are kept. Both come from the Core mod's `markdown.js`.
+
 `window.Icon(name, { size, color, title })` is also available (site.js sets
 it up) for topbar-style icons inside your own tab/widget markup.
 
@@ -233,10 +238,15 @@ accent color picker and mod toggles are available in Settings.
 
 ## Updates
 
-Packaged builds check GitHub Releases through `electron-updater`; installing an
-update always requires confirmation in a native dialog. Tag builds publish as
-a draft release, so publish the draft when its installers and update metadata
-are ready. The app version is the `version` in `package.json`.
+Packaged builds check GitHub Releases through `electron-updater`. When an update
+is found, an in-app dialog shows the version change and the release notes, and
+installing always requires clicking **Install and restart** there. It also
+appears under Settings → Updates.
+
+The release notes are the body of the GitHub release, written in markdown.
+Tag builds publish as a draft release, so write the notes in the draft's
+description and publish it when its installers and update metadata are ready.
+The app version is the `version` in `package.json`.
 
 ## Distribution and code signing
 
@@ -271,5 +281,5 @@ public/js/bootstrap.js       the engine: loads mods, defines ModAPI
 public/js/site.js            the bare site: topbar + blank content
 public/js/native-api.js      Electron API bridge (ModAPI.native / window.appAPI)
 public/css/site.css          all core styling
-electron/                    Electron main process, preload, and scoped APIs
+electron/                    Electron main process, preload, scoped APIs, and update-notes.js
 ```

@@ -308,6 +308,143 @@ async function renderGeneralSection(container) {
 
 let modsChanged = false;
 
+// ---------------- updates ----------------
+// The confirmation lives in the page, not in a native dialog: an overlay shows the
+// version change and the release notes (markdown) and asks before installing.
+
+let updateDialogOpen = false;
+
+function formatUpdateDate(value) {
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime())
+    ? date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+    : '';
+}
+
+// Resolves when the dialog closes. If an install starts, it stays open until the app restarts.
+function showUpdateDialog(info) {
+  if (updateDialogOpen) return Promise.resolve();
+  updateDialogOpen = true;
+  const returnFocus = document.activeElement;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'update-overlay';
+  overlay.innerHTML = `
+    <div class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-dialog-title">
+      <h2 id="update-dialog-title" class="update-title">Update available</h2>
+      <div class="update-versions"></div>
+      <div class="update-notes" tabindex="0" aria-label="Release notes"></div>
+      <div class="update-progress" hidden><div class="update-progress-bar"></div></div>
+      <p class="update-message" role="status"></p>
+      <div class="update-actions">
+        <button type="button" class="update-link-btn" data-action="release">View on GitHub</button>
+        <span class="update-spacer"></span>
+        <button type="button" class="theme-reset-btn" data-action="later">Later</button>
+        <button type="button" class="save-btn" data-action="install">Install and restart</button>
+      </div>
+    </div>
+  `;
+
+  const versions = overlay.querySelector('.update-versions');
+  const date = formatUpdateDate(info.date);
+  versions.textContent = `Version ${info.currentVersion} \u2192 ${info.version}${date ? ` \u00b7 ${date}` : ''}`;
+
+  const notes = overlay.querySelector('.update-notes');
+  if (info.body && ModAPI.setMarkdown) {
+    ModAPI.setMarkdown(notes, info.body);
+  } else if (info.body) {
+    notes.classList.add('update-notes-plain');
+    notes.textContent = info.body;
+  } else {
+    notes.classList.add('update-notes-empty');
+    notes.textContent = 'No release notes were published for this version.';
+  }
+
+  const progress = overlay.querySelector('.update-progress');
+  const bar = overlay.querySelector('.update-progress-bar');
+  const message = overlay.querySelector('.update-message');
+  const installBtn = overlay.querySelector('[data-action="install"]');
+  const laterBtn = overlay.querySelector('[data-action="later"]');
+  const releaseBtn = overlay.querySelector('[data-action="release"]');
+  if (!info.releaseUrl || !window.electronAPI?.openExternal) releaseBtn.hidden = true;
+
+  let installing = false;
+  let stopProgress = null;
+
+  return new Promise((resolve) => {
+    function close() {
+      if (installing) return;
+      document.removeEventListener('keydown', onKeydown, true);
+      overlay.remove();
+      updateDialogOpen = false;
+      document.dispatchEvent(new CustomEvent('mods:overlay-closed'));
+      if (returnFocus?.focus) returnFocus.focus();
+      resolve();
+    }
+
+    function onKeydown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      } else if (event.key === 'Tab') {
+        const focusable = [...overlay.querySelectorAll('button:not([disabled]):not([hidden]), [tabindex="0"]')];
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    }
+
+    async function install() {
+      installing = true;
+      installBtn.disabled = true;
+      laterBtn.disabled = true;
+      message.classList.remove('error');
+      message.textContent = 'Downloading update\u2026';
+      progress.hidden = false;
+      bar.style.width = '0%';
+      stopProgress = window.electronAPI?.onUpdateProgress?.((p) => {
+        const percent = Math.max(0, Math.min(100, Math.round(p.percent || 0)));
+        bar.style.width = `${percent}%`;
+        message.textContent = `Downloading update\u2026 ${percent}%`;
+      });
+
+      try {
+        const result = await window.appAPI.installUpdate();
+        if (result.installed) {
+          bar.style.width = '100%';
+          message.textContent = 'Restarting to finish the update\u2026';
+          return; // the app quits; the dialog stays up until then
+        }
+        if (result.busy) throw new Error('an update is already being installed');
+        throw new Error('this update is no longer available');
+      } catch (error) {
+        installing = false;
+        progress.hidden = true;
+        message.classList.add('error');
+        message.textContent = `Update failed: ${error.message || error}`;
+        installBtn.textContent = 'Try again';
+        installBtn.disabled = false;
+        laterBtn.disabled = false;
+      } finally {
+        if (stopProgress) { stopProgress(); stopProgress = null; }
+      }
+    }
+
+    installBtn.addEventListener('click', install);
+    laterBtn.addEventListener('click', close);
+    releaseBtn.addEventListener('click', () => window.electronAPI.openExternal(info.releaseUrl).catch(() => {}));
+    overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) close(); });
+    document.addEventListener('keydown', onKeydown, true);
+
+    document.body.appendChild(overlay);
+    document.dispatchEvent(new CustomEvent('mods:overlay-opened'));
+    installBtn.focus();
+  });
+}
+
 async function renderUpdatesSection(container) {
   container.innerHTML = `
     <div class="settings-section-title">Updates</div>
@@ -344,30 +481,9 @@ async function renderUpdatesSection(container) {
     }
 
     status.textContent = `Version ${result.version} is available (you have ${result.currentVersion}).`;
-    actionBtn.textContent = 'Install update\u2026';
+    actionBtn.textContent = 'View update\u2026';
     actionBtn.style.display = '';
-    actionBtn.onclick = install;
-  }
-
-  async function install() {
-    actionBtn.disabled = true;
-    status.textContent = 'Waiting for confirmation\u2026';
-    try {
-      const result = await window.appAPI.installUpdate();
-      if (result.declined) {
-        status.textContent = 'Update available \u2014 install whenever you\u2019re ready.';
-      } else if (result.installed) {
-        status.textContent = `Version ${result.version} installed \u2014 restart to finish.`;
-        actionBtn.style.display = 'none';
-      } else {
-        status.textContent = 'You\u2019re up to date.';
-        actionBtn.style.display = 'none';
-      }
-    } catch (error) {
-      status.textContent = `Update failed: ${error}`;
-    } finally {
-      actionBtn.disabled = false;
-    }
+    actionBtn.onclick = () => showUpdateDialog(result);
   }
 
   check();
@@ -569,7 +685,7 @@ async function checkForUpdatesOnStartup() {
   if (!window.appAPI?.checkForUpdates) return;
   try {
     const result = await window.appAPI.checkForUpdates();
-    if (result?.available) await window.appAPI.installUpdate();
+    if (result?.available) await showUpdateDialog(result);
   } catch (error) {
     console.error('Update check failed:', error);
   }

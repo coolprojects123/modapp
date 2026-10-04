@@ -4,7 +4,7 @@
   "author": "modapp",
   "description": "Home page and Settings.",
   "enabledByDefault": true,
-  "apis": ["api.js", "settings-api.js"],
+  "apis": ["api.js", "settings-api.js", "markdown.js"],
   "styles": ["style.css"],
   "scripts": ["script.js"],
   "permissions": ["settings.read", "settings.write", "fs.ensure_dir", "mods.toggle"]

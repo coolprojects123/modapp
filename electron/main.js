@@ -4,6 +4,8 @@ const { app, BrowserWindow, components } = require('electron');
 const { ipcMain } = require('electron');
 const { dialog, Notification } = require('electron');
 const { autoUpdater } = require('electron-updater');
+const { shell: electronShell } = require('electron');
+const { normalizeNotes, repoFromConfig, fetchReleaseBody } = require('./update-notes');
 const fs = require('fs');
 const { execFile } = require('child_process');
 const path = require('path');
@@ -192,45 +194,68 @@ ipcMain.handle('mods:toggle', (_event, { modId, id }) => {
   return config[id];
 });
 
-ipcMain.handle('updates:check', async () => {
-  if (!app.isPackaged) return { available: false, configured: false };
+// Update flow. The renderer owns the confirmation UI (the Core mod's update dialog,
+// which shows the release notes as markdown); main reports what is available and,
+// when asked, downloads and installs it.
+let updateInstalling = false;
+
+async function findUpdate() {
   const result = await autoUpdater.checkForUpdates();
   const update = result?.updateInfo;
-  if (!update || update.version === app.getVersion()) return { available: false };
-  const notes = update.releaseNotes;
+  if (!update || update.version === app.getVersion()) return null;
+  return update;
+}
+
+ipcMain.handle('updates:check', async () => {
+  if (!app.isPackaged) return { available: false, configured: false };
+  const update = await findUpdate();
+  if (!update) return { available: false };
+
+  const repo = repoFromConfig(process.resourcesPath);
+  // The raw release body is markdown. If GitHub can't be reached, fall back to the
+  // updater's own notes (HTML from the releases feed, converted to markdown).
+  const release = await fetchReleaseBody({ repo, version: update.version });
   return {
     available: true,
     version: update.version,
     currentVersion: app.getVersion(),
-    body: typeof notes === 'string' ? notes : Array.isArray(notes) ? notes.map((entry) => entry.note || '').join('\n') : '',
+    body: release?.body || normalizeNotes(update.releaseNotes),
+    bodyFormat: 'markdown',
     date: update.releaseDate || null,
+    releaseUrl: release?.url || `https://github.com/${repo}/releases/tag/v${update.version}`,
   };
 });
 
 ipcMain.handle('updates:install', async () => {
   if (!app.isPackaged) return { installed: false, available: false };
-  const result = await autoUpdater.checkForUpdates();
-  const update = result?.updateInfo;
-  if (!update || update.version === app.getVersion()) return { installed: false, available: false };
+  if (updateInstalling) return { installed: false, available: true, busy: true };
+  const update = await findUpdate();
+  if (!update) return { installed: false, available: false };
 
-  const notes = update.releaseNotes;
-  const detail = (typeof notes === 'string' ? notes : Array.isArray(notes) ? notes.map((entry) => entry.note || '').join('\n') : '')
-    .slice(0, 600);
-  const confirmation = await dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'Install update?',
-    message: `Version ${update.version} is available (you have ${app.getVersion()}).`,
-    detail,
-    buttons: ['Install', 'Cancel'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  });
-  if (confirmation.response !== 0) return { installed: false, available: true, declined: true };
-
-  await autoUpdater.downloadUpdate();
-  autoUpdater.quitAndInstall(true, true);
+  updateInstalling = true;
+  const sendProgress = ({ percent, transferred, total, bytesPerSecond }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updates:progress', { percent, transferred, total, bytesPerSecond });
+    }
+  };
+  autoUpdater.on('download-progress', sendProgress);
+  try {
+    await autoUpdater.downloadUpdate();
+  } finally {
+    autoUpdater.removeListener('download-progress', sendProgress);
+    updateInstalling = false;
+  }
+  // Give the renderer a moment to receive this result before the app quits.
+  setTimeout(() => autoUpdater.quitAndInstall(true, true), 400);
   return { installed: true, available: true, version: update.version };
+});
+
+// Opens a link from rendered markdown in the OS browser (never inside the app window).
+ipcMain.handle('app:openExternal', async (_event, { url }) => {
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error('invalid url'); }
+  if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('only http(s) and mailto links can be opened');
+  await electronShell.openExternal(parsed.href);
 });
 
 function modPermissions(modId) {
