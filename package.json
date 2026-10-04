@@ -72,6 +72,9 @@
     },
     "mac": {
       "target": "dmg"
+    },
+    "nsis": {
+      "artifactName": "modapp-Setup-${version}.${ext}"
     }
   }
 }
