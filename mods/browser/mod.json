@@ -6,5 +6,5 @@
   "enabledByDefault": true,
   "styles": ["style.css"],
   "scripts": ["script.js"],
-  "permissions": ["webview.access"]
+  "permissions": ["webview.access", "fs.read", "fs.write", "fs.ensure_dir", "fs.read_dir", "fs.remove"]
 }

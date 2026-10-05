@@ -90,6 +90,9 @@ const modAPIImpl = (function () {
         console.warn('[ModAPI] registerTab requires an id and a render(container) function');
         return;
       }
+      if (tabs.has(id) && tabs.get(id).source !== modId) {
+        console.warn(`[ModAPI] tab "${id}" from "${modId}" replaces the tab registered by "${tabs.get(id).source}"`);
+      }
       tabs.set(id, { id, label: label || id, icon: icon || '\u{1F9E9}', render, fullBleed: !!fullBleed, source: modId });
       document.dispatchEvent(new CustomEvent('mods:tabs-changed'));
     },
@@ -195,13 +198,15 @@ async function loadMods() {
 
   mods.sort((a, b) => (b.core === true) - (a.core === true));
 
+  // [assetBase, modId] pairs. native-api.js uses these to work out which mod a native call came from
+  // (by finding the mod's own script URL in the call stack) and sends that id to the backend explicitly.
+  window.ModAPI._modBases = mods.filter((mod) => mod.assetBase).map((mod) => [mod.assetBase, mod.id]);
+
   for (const mod of mods) {
     for (const src of mod.apis || []) {
       if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
-      // Set the current mod context for permission isolation
-      if (window.modContext) window.modContext.setModId(mod.id);
       try {
         await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
       } catch (err) {
@@ -227,8 +232,6 @@ async function loadMods() {
       if (!safeModPath(mod.id, src)) continue;
       window.ModAPI._setModId(mod.id);
       window.ModAPI._setModAssetBase(mod.assetBase || null);
-      // Set the current mod context for permission isolation
-      if (window.modContext) window.modContext.setModId(mod.id);
       try {
         await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
       } catch (err) {
@@ -237,8 +240,6 @@ async function loadMods() {
     }
   }
   
-  // Reset to core for any non-mod code
-  if (window.modContext) window.modContext.setModId('core');
   window.ModAPI._setModId(null);
   window.ModAPI._setModAssetBase(null);
 

@@ -30,7 +30,7 @@ function htmlToMarkdown(html) {
     .replace(/<(strong|b)(\s[^>]*)?>([\s\S]*?)<\/\1>/gi, '**$3**')
     .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
     .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_m, level, label) => `\n${'#'.repeat(Number(level))} ${stripTags(label).trim()}\n`)
-    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_m, item) => `\n- ${stripTags(item).trim()}`)
+    .replace(/<li(?:\s[^>]*)?>([\s\S]*?)<\/li>/gi, (_m, item) => `\n- ${stripTags(item).trim()}`)
     .replace(/<hr\s*\/?>/gi, '\n---\n')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|ul|ol|div)>/gi, '\n\n');
@@ -80,4 +80,4 @@ async function fetchReleaseBody({ repo, version, fetchImpl = fetch, timeoutMs = 
   }
 }
 
-module.exports = { htmlToMarkdown, normalizeNotes, repoFromConfig, fetchReleaseBody, FALLBACK_REPO };   
+module.exports = { htmlToMarkdown, normalizeNotes, repoFromConfig, fetchReleaseBody, FALLBACK_REPO };

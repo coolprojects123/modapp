@@ -61,30 +61,23 @@ function createModFilesystem({ modsDir, dataDir, requireEnabled, requirePermissi
     if (typeof modId !== 'string' || !MOD_ID_PATTERN.test(modId)) throw new Error('invalid mod id');
     if (typeof requestedPath !== 'string' || requestedPath.includes('\0')) throw new Error('invalid path');
 
-    const base = path.resolve(dataDir, modId);
-    const absolute = path.isAbsolute(requestedPath);
-    if (!absolute && requestedPath.split(/[\\/]/).includes('..')) {
-      throw new Error('path traversal is not allowed');
-    }
-    if (process.platform === 'win32' && !absolute && requestedPath.includes(':')) {
-      throw new Error('invalid path');
-    }
-
-    const target = path.resolve(absolute ? requestedPath : base, ...(absolute ? [] : [requestedPath]));
-    const baseReal = realPathForMissingTarget(base);
-    const targetReal = realPathForMissingTarget(target);
-    const ownData = isWithin(baseReal, targetReal);
-
-    // Block absolute paths entirely for security
-    // Absolute paths can access any file on the system, which is a security risk
-    if (absolute) {
+    // Mods only get relative paths inside their own data directory. Check that before touching the disk.
+    if (path.isAbsolute(requestedPath)) {
       throw new Error('absolute paths are not allowed; use relative paths within mod data directory');
     }
-
-    if (!ownData) throw new Error('path escapes the mod data directory');
-    if (!isWithin(base, target)) throw new Error('path escapes the mod data directory');
+    if (requestedPath.split(/[\\/]/).includes('..')) throw new Error('path traversal is not allowed');
+    if (process.platform === 'win32' && requestedPath.includes(':')) throw new Error('invalid path');
 
     requireEnabled(modId);
+
+    const base = path.resolve(dataDir, modId);
+    const target = path.resolve(base, requestedPath);
+    if (!isWithin(base, target)) throw new Error('path escapes the mod data directory');
+    // Resolve symlinks too, so a link inside the data directory can't point somewhere else.
+    if (!isWithin(realPathForMissingTarget(base), realPathForMissingTarget(target))) {
+      throw new Error('path escapes the mod data directory');
+    }
+    const ownData = true;
 
     return { base, target, ownData };
   }

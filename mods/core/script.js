@@ -1,6 +1,6 @@
 // This mod provides the app's settings widgets.
 
-function escapeHtml(str) { return String(str ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function colorForId(id) {
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
@@ -51,7 +51,7 @@ async function readMods() {
   // Browser fallback
   const saved = JSON.parse(localStorage.getItem('modapp_mods') || '{}');
 
-  return window.MOD_MANIFESTS.map((mod) => ({
+  return (window.MOD_MANIFESTS || []).map((mod) => ({
     ...mod,
     core: mod.id === 'core',
     enabled:
@@ -104,7 +104,7 @@ function applySettingsToShell(settings) {
 
   if (settings.themeVars) {
     for (const [key, value] of Object.entries(settings.themeVars)) {
-      if (key === '--accent' || !value) continue;
+      if (key === '--accent' || !value || !key.startsWith('--')) continue;
       document.documentElement.style.setProperty(key, value);
     }
   }
@@ -463,7 +463,7 @@ async function renderUpdatesSection(container) {
     try {
       result = await window.appAPI.checkForUpdates();
     } catch (error) {
-      status.textContent = `Couldn't check for updates: ${error}`;
+      status.textContent = `Couldn't check for updates: ${error?.message || error}`;
       return;
     }
 
@@ -654,7 +654,13 @@ ModAPI.registerWidget({
       // one (General) must not paint over the section picked after it.
       const pane = document.createElement('div');
       content.replaceChildren(pane);
-      entry.render(pane);
+      Promise.resolve().then(() => entry.render(pane)).catch((error) => {
+        console.error(`[settings] section "${entry.id}" failed:`, error);
+        const p = document.createElement('p');
+        p.className = 'error';
+        p.textContent = `This section failed to load: ${error?.message || error}`;
+        pane.replaceChildren(p);
+      });
     }
 
     selectSection('general');
@@ -671,12 +677,16 @@ ModAPI.registerWidget({
 // Apply saved settings once everything has loaded, and honor defaultTab by
 // clicking the matching nav button.
 document.addEventListener('mods:ready', async () => {
-  const s = await loadSettings();
-  ModAPI.setIdentity({ title: s.siteTitle, icon: s.siteIcon });
-  applySettingsToShell(s);
-  if (s.defaultTab) {
-    const btn = document.querySelector(`.tab[data-id="${s.defaultTab}"]`);
-    if (btn) btn.click();
+  try {
+    const s = await loadSettings();
+    ModAPI.setIdentity({ title: s.siteTitle, icon: s.siteIcon });
+    applySettingsToShell(s);
+    if (s.defaultTab) {
+      const btn = document.querySelector(`.tab[data-id="${CSS.escape(s.defaultTab)}"]`);
+      if (btn) btn.click();
+    }
+  } catch (error) {
+    console.error('Failed to apply saved settings:', error);
   }
   checkForUpdatesOnStartup();
 });

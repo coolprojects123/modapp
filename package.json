@@ -17,7 +17,15 @@
     "build": "electron-builder --publish never",
     "build:linux": "electron-builder --linux --publish never",
     "build:windows": "electron-builder --win --publish never",
-    "test": "node --test electron/*.test.js"
+    "test": "node --test electron/*.test.js",
+    "build:mac": "electron-builder --mac --publish never",
+    "sign": "node scripts/sign.js",
+    "sign:windows": "node scripts/sign.js --platform=win32",
+    "sign:mac": "node scripts/sign.js --platform=darwin",
+    "sign:linux": "node scripts/sign.js --platform=linux",
+    "sign:dev": "node scripts/sign-dev.js",
+    "sign:dev:win": "node scripts/sign-dev.js --account=$EVS_ACCOUNT_NAME --password=$EVS_PASSWD",
+    "sign:dev:mac": "node scripts/sign-dev.js --account=$EVS_ACCOUNT_NAME --password=$EVS_PASSWD"
   },
   "dependencies": {
     "electron-updater": "^6.8.10",

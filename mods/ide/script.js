@@ -747,10 +747,10 @@ function renderIde(container) {
     if (!window.monaco) return createFallback();
     if (fallback) { fallback.remove(); fallback = null; }
     window.monaco.editor.defineTheme('modapp-black', { base: 'vs-dark', inherit: true, rules: [], colors: {
-      'editor.background': '#000000', 'editorGutter.background': '#000000', 'minimap.background': '#000000',
-      'editor.lineHighlightBackground': '#0d0d0d', 'editorWidget.background': '#0a0a0a', 'scrollbarSlider.background': '#ffffff18',
-      'editorIndentGuide.background1': '#1a1a1a', 'editorLineNumber.foreground': '#555555' } });
-    editor = window.monaco.editor.create(mount, { value: active ? active.value : '', language: active ? active.language : 'javascript', theme: 'modapp-black', automaticLayout: true, minimap: { enabled: true }, fontSize: 13, lineHeight: 21, padding: { top: 16 }, scrollBeyondLastLine: false, tabSize: 2 });
+      'editor.background': '#0b0d12', 'editorGutter.background': '#0b0d12', 'minimap.background': '#0b0d12',
+      'editor.lineHighlightBackground': '#10131a', 'editorWidget.background': '#161a23', 'scrollbarSlider.background': '#ffffff18',
+      'editorIndentGuide.background1': '#1c212c', 'editorLineNumber.foreground': '#4b5365' } });
+    editor = window.monaco.editor.create(mount, { value: active ? active.value : '', language: active ? active.language : 'javascript', theme: 'modapp-black', automaticLayout: true, minimap: { enabled: true }, fontSize: 13, lineHeight: 21, padding: { top: 4 }, scrollBeyondLastLine: false, tabSize: 2 });
     editor.onDidChangeModelContent(() => changed(editor.getValue()));
     editor.onDidChangeCursorPosition((event) => { container.querySelector('[data-cursor]').textContent = `Ln ${event.position.lineNumber}, Col ${event.position.column}`; });
   }
@@ -844,7 +844,7 @@ function renderIde(container) {
       fontSize: 13,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: { background: '#000000', foreground: '#cccccc', cursor: '#cccccc', selectionBackground: '#264f78' },
+      theme: { background: '#0b0d12', foreground: '#cdd3de', cursor: '#cdd3de', selectionBackground: '#2a3a5c' },
     });
     fitAddon = new FitCtor();
     term.loadAddon(fitAddon);
@@ -1085,4 +1085,6 @@ function renderIde(container) {
   initTerminal().catch((error) => console.warn('[IDE] terminal init failed', error)).finally(loadMonaco);
 }
 
-ModAPI.registerTab({ id: 'ide', label: 'IDE', icon: 'terminal', render: renderIde });
+// fullBleed: the shell gives the tab the whole content area (no padding or max-width), so the workspace
+// can fill it exactly instead of leaving a gap around it and overflowing the page.
+ModAPI.registerTab({ id: 'ide', label: 'IDE', icon: 'terminal', render: renderIde, fullBleed: true });

@@ -9,6 +9,8 @@ const { normalizeNotes, repoFromConfig, fetchReleaseBody } = require('./update-n
 const fs = require('fs');
 const { execFile } = require('child_process');
 const path = require('path');
+const net = require('net');
+const dns = require('dns');
 const { pathToFileURL } = require('url');
 const pty = require('node-pty');
 const { createModFilesystem } = require('./mod-fs');
@@ -105,6 +107,13 @@ if (components) {
 
 let mainWindow;
 const rootDir = path.join(__dirname, '..');
+// Google (and some other sites) refuse to let you sign in from an "embedded browser" and detect it from the
+// user agent, which by default contains "Electron/x.y.z" and this app's own name/version. Present the plain
+// Chrome user agent instead. Set before any session is created so every webview partition picks it up.
+app.userAgentFallback = app.userAgentFallback
+  .replace(/\s+Electron\/\S+/i, '')
+  .replace(/(Gecko\))\s+.*?\s+(Chrome\/)/, '$1 $2');
+
 const isDev = !app.isPackaged;
 const modsDir = isDev ? path.join(rootDir, 'mods') : path.join(app.getPath('userData'), 'mods');
 const settingsPath = path.join(modsDir, '.settings.json');
@@ -138,12 +147,18 @@ function readJson(filePath, fallback) {
 }
 
 function writeJson(filePath, value) {
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+  // Write to a temp file and rename so a crash mid-write can't leave truncated JSON behind.
+  const temp = `${filePath}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2));
+  fs.renameSync(temp, filePath);
 }
 
 function discoverMods() {
   const config = readJson(configPath, {});
-  return fs.readdirSync(modsDir, { withFileTypes: true })
+  let entries;
+  try { entries = fs.readdirSync(modsDir, { withFileTypes: true }); }
+  catch { return []; } // no mods folder yet (e.g. a fresh dev checkout)
+  return entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
       const id = entry.name;
@@ -180,6 +195,7 @@ ipcMain.handle('settings:read', (event, { modId }) => {
 ipcMain.handle('settings:write', (event, { modId, changes }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'settings.write');
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('settings changes must be an object');
   const settings = { ...defaultSettings, ...readJson(settingsPath, {}), ...changes };
   writeJson(settingsPath, settings);
   return settings;
@@ -204,9 +220,10 @@ let updateInstalling = false;
 
 async function findUpdate() {
   const result = await autoUpdater.checkForUpdates();
-  const update = result?.updateInfo;
-  if (!update || update.version === app.getVersion()) return null;
-  return update;
+  if (!result) return null;
+  // isUpdateAvailable also covers "the latest release is older than what's installed".
+  const available = result.isUpdateAvailable ?? (result.updateInfo?.version !== app.getVersion());
+  return available ? result.updateInfo : null;
 }
 
 ipcMain.handle('updates:check', async () => {
@@ -232,25 +249,34 @@ ipcMain.handle('updates:check', async () => {
 ipcMain.handle('updates:install', async () => {
   if (!app.isPackaged) return { installed: false, available: false };
   if (updateInstalling) return { installed: false, available: true, busy: true };
-  const update = await findUpdate();
-  if (!update) return { installed: false, available: false };
-
+  // Claim the slot before the first await so a double click can't start two downloads.
   updateInstalling = true;
+
   const sendProgress = ({ percent, transferred, total, bytesPerSecond }) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updates:progress', { percent, transferred, total, bytesPerSecond });
     }
   };
-  autoUpdater.on('download-progress', sendProgress);
+
+  let version;
   try {
+    const update = await findUpdate();
+    if (!update) {
+      updateInstalling = false;
+      return { installed: false, available: false };
+    }
+    version = update.version;
+    autoUpdater.on('download-progress', sendProgress);
     await autoUpdater.downloadUpdate();
+  } catch (error) {
+    updateInstalling = false;
+    throw error;
   } finally {
     autoUpdater.removeListener('download-progress', sendProgress);
-    updateInstalling = false;
   }
   // Give the renderer a moment to receive this result before the app quits.
   setTimeout(() => autoUpdater.quitAndInstall(true, true), 400);
-  return { installed: true, available: true, version: update.version };
+  return { installed: true, available: true, version };
 });
 
 // Opens a link from rendered markdown in the OS browser (never inside the app window).
@@ -264,17 +290,13 @@ ipcMain.handle('app:openExternal', async (_event, { url }) => {
 function modPermissions(modId) {
   if (typeof modId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(modId)) throw new Error('invalid mod id');
   
-  // Resolve the manifest path and verify it's within modsDir to prevent symlink attacks
-  const manifestPath = path.resolve(modsDir, modId, 'mod.json');
+  // modId is already restricted to [A-Za-z0-9_-], but keep the manifest inside modsDir regardless.
   const modsDirResolved = path.resolve(modsDir);
-  
-  // Check that the resolved manifest path is actually within the mods directory
-  // This prevents symlink attacks where modId resolves to a path outside modsDir
-  if (!manifestPath.startsWith(modsDirResolved + path.sep) && 
-      !manifestPath.startsWith(modsDirResolved)) {
+  const manifestPath = path.resolve(modsDirResolved, modId, 'mod.json');
+  if (!manifestPath.startsWith(modsDirResolved + path.sep)) {
     throw new Error(`mod '${modId}' path resolves outside mods directory`);
   }
-  
+
   const manifest = readJson(manifestPath, null);
   return new Set(manifest?.permissions || []);
 }
@@ -333,36 +355,36 @@ for (const [operation, method] of [
 // so CSS containment and stacking work; these IPC handlers remain the
 // permission gate before the frontend creates or manages an element.
 // ============================================================
-ipcMain.handle('webview:create', (event, { instance, url }) => {
-  const callerModId = getCallerModId(event);
-  if (!callerModId) throw new Error('No mod context for webview creation');
-  requirePermission(callerModId, 'webview.access');
-  if (!modEnabled(callerModId)) throw new Error(`mod '${callerModId}' is disabled`);
-  const parsedUrl = new URL(url);
+// The modId comes from the payload (preload injects it) and goes through validateModContext like every
+// other handler. getCallerModId alone always returned null here, so every webview call used to throw.
+function requireWebviewAccess(event, modId) {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'webview.access');
+  return callerModId;
+}
+
+ipcMain.handle('webview:create', (event, { modId, url }) => {
+  requireWebviewAccess(event, modId);
+  let parsedUrl;
+  try { parsedUrl = new URL(url); } catch { throw new Error(`invalid url (received ${typeof url}: ${String(typeof url === 'object' ? JSON.stringify(url) : url).slice(0, 120)})`); }
   if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
     throw new Error('only http(s) URLs can be opened in a mod webview');
   }
   return true;
 });
 
-ipcMain.handle('webview:close', (event, { instance }) => {
-  const callerModId = getCallerModId(event);
-  if (!callerModId) throw new Error('No mod context for webview close');
-  requirePermission(callerModId, 'webview.access');
+ipcMain.handle('webview:close', (event, { modId }) => {
+  requireWebviewAccess(event, modId);
   return true;
 });
 
-ipcMain.handle('webview:setVisible', (event, { instance, visible }) => {
-  const callerModId = getCallerModId(event);
-  if (!callerModId) throw new Error('No mod context for webview setVisible');
-  requirePermission(callerModId, 'webview.access');
+ipcMain.handle('webview:setVisible', (event, { modId }) => {
+  requireWebviewAccess(event, modId);
   return true;
 });
 
-ipcMain.handle('webview:setBounds', (event, { instance, x, y, width, height }) => {
-  const callerModId = getCallerModId(event);
-  if (!callerModId) throw new Error('No mod context for webview setBounds');
-  requirePermission(callerModId, 'webview.access');
+ipcMain.handle('webview:setBounds', (event, { modId }) => {
+  requireWebviewAccess(event, modId);
   return true;
 });
 
@@ -387,8 +409,6 @@ function createWindow() {
   });
 }
 
-// Pages inside a mod <webview> that try to open a new window (target=_blank, window.open, login popups)
-// would otherwise be blocked silently. Load those URLs in the same webview instead.
 // Test switch: PowerShell> $env:MODAPP_NO_GPU=1; npm start   (rules out GPU/hardware-decode playback problems)
 if (process.env.MODAPP_NO_GPU) app.disableHardwareAcceleration();
 
@@ -403,6 +423,25 @@ function desktopUserAgent() {
 }
 
 app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() === 'window') {
+    // The app window enables <webview>. Never let a webview be attached with Node access or its own
+    // preload, and only allow http(s) pages; keep the app window itself on the app's own page.
+    contents.on('will-attach-webview', (event, webPreferences, params) => {
+      delete webPreferences.preload;
+      delete webPreferences.preloadURL;
+      webPreferences.nodeIntegration = false;
+      webPreferences.nodeIntegrationInSubFrames = false;
+      webPreferences.contextIsolation = true;
+      webPreferences.webSecurity = true;
+      webPreferences.allowRunningInsecureContent = false;
+      if (!/^https?:/i.test(String(params.src || ''))) event.preventDefault();
+    });
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.on('will-navigate', (event, url) => {
+      if (url !== contents.getURL()) event.preventDefault();
+    });
+    return;
+  }
   if (contents.getType() !== 'webview') return;
   contents.setUserAgent(desktopUserAgent());
 
@@ -425,6 +464,13 @@ app.on('web-contents-created', (_event, contents) => {
     contents.on('media-started-playing', () => console.log('[webview] media started'));
     contents.on('media-paused', () => console.log('[webview] media paused'));
   }
+  // Webviews only ever show http(s) pages.
+  const httpOnly = (event, url) => { if (!/^https?:/i.test(url)) event.preventDefault(); };
+  contents.on('will-navigate', httpOnly);
+  contents.on('will-redirect', httpOnly);
+
+  // Pages that try to open a new window (target=_blank, window.open, login popups) would otherwise be
+  // blocked silently. Load those URLs in the same webview instead.
   contents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) contents.loadURL(url);
     return { action: 'deny' };
@@ -485,16 +531,23 @@ function getCallerModId(event) {
 
 function validateModContext(event, requestedModId) {
   const callerModId = getCallerModId(event);
-  if (!callerModId) {
-    throw new Error(`cannot determine caller mod context`);
+
+  // If we can determine the caller's mod from frame context, validate it matches
+  if (callerModId) {
+    // Ensure the requested modId matches the caller's modId
+    if (callerModId !== requestedModId) {
+      throw new Error(`mod '${callerModId}' cannot impersonate mod '${requestedModId}'`);
+    }
+    return callerModId;
   }
-  
-  // Ensure the requested modId matches the caller's modId
-  if (callerModId !== requestedModId) {
-    throw new Error(`mod '${callerModId}' cannot impersonate mod '${requestedModId}'`);
+
+  // If frame context is not available (all mods in same renderer), trust the modId from payload
+  // The preload script injects the currentModId into all API calls
+  if (!requestedModId) {
+    throw new Error('cannot determine caller mod context');
   }
-  
-  return callerModId;
+
+  return requestedModId;
 }
 
 ipcMain.handle('shell:run', (event, { modId, command, cwd = '' }) => {
@@ -506,79 +559,108 @@ ipcMain.handle('shell:run', (event, { modId, command, cwd = '' }) => {
   const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   const executable = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
-  const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-c', command];
+  // On Windows, cmd /s /c "<command>" with verbatim arguments is the only way to keep inner quotes intact;
+  // without it Node re-quotes the argument and cmd sees backslash-escaped quotes it doesn't understand.
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', `"${command}"`] : ['-c', command];
   return new Promise((resolve) => {
-    execFile(executable, args, { cwd: workingDirectory, timeout: 30000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(executable, args, {
+    cwd: workingDirectory,
+    timeout: 30000,
+    maxBuffer: 1024 * 1024,
+    windowsVerbatimArguments: process.platform === 'win32',
+  }, (error, stdout, stderr) => {
       resolve({
         code: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
         stdout: String(stdout || ''),
         stderr: String(stderr || ''),
-        timedOut: error?.killed === true || error?.code === 'ETIMEDOUT',
+        timedOut: error?.killed === true && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
       });
     });
   });
 });
+
+// ---- net.fetch: public internet only ----
+const MAX_FETCH_BYTES = 1024 * 1024;
+const MAX_REDIRECTS = 5;
+
+function isPrivateAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) {
+    const [a, b] = address.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127
+      || (a === 100 && b >= 64 && b <= 127)   // carrier-grade NAT
+      || (a === 169 && b === 254)             // link-local + cloud metadata
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 192 && b === 0)
+      || a >= 224;                            // multicast / reserved
+  }
+  if (family === 6) {
+    const lower = address.toLowerCase();
+    const dotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
+    if (dotted) return isPrivateAddress(dotted[1]);
+    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower); // how URL normalizes IPv4-mapped addresses
+    if (hex) {
+      const hi = parseInt(hex[1], 16);
+      const lo = parseInt(hex[2], 16);
+      return isPrivateAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
+    return lower === '::' || lower === '::1' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower);
+  }
+  return true; // not an IP address: treat as unsafe
+}
+
+async function assertPublicHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase(); // URL keeps brackets around IPv6 hosts
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) {
+    throw new Error('fetch to localhost/internal addresses not allowed');
+  }
+  const addresses = net.isIP(host) ? [{ address: host }] : await dns.promises.lookup(host, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error('fetch to private/internal network addresses not allowed');
+  }
+}
+
+// Redirects are followed by hand so every hop is checked, not just the first URL.
+// (A DNS answer can still change between this check and the request; this blocks the common cases.)
+async function fetchPublic(startUrl) {
+  let current = startUrl;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    if (current.protocol !== 'http:' && current.protocol !== 'https:') throw new Error('fetch_url: url must be http(s)');
+    await assertPublicHost(current.hostname);
+    const response = await fetch(current, { signal: AbortSignal.timeout(20000), redirect: 'manual' });
+    const location = response.headers.get('location');
+    if (response.status >= 300 && response.status < 400 && location) {
+      await response.body?.cancel().catch(() => {});
+      current = new URL(location, current);
+      continue;
+    }
+    return response;
+  }
+  throw new Error('too many redirects');
+}
+
+async function readLimited(response, limit) {
+  const tooLarge = () => new Error('response is too large (max 1 MiB)');
+  if (Number(response.headers.get('content-length')) > limit) throw tooLarge();
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of response.body ?? []) {
+    total += chunk.length;
+    if (total > limit) throw tooLarge(); // leaving the loop cancels the download
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 ipcMain.handle('net:fetch', async (event, { modId, url }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'net.fetch');
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error('Invalid URL'); }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('fetch_url: url must be http(s)');
-  
-  // SSRF protection: Block access to internal/private networks
-  const hostname = parsed.hostname.toLowerCase();
-  const blockedHosts = [
-    'localhost', '127.0.0.1', '::1', '0.0.0.0',
-    // Private IPv4 ranges
-    '10.0.0.0/8', '10.255.255.255',
-    '172.16.0.0/12', '172.31.255.255',
-    '192.168.0.0/16', '192.168.255.255',
-    // Link-local
-    '169.254.0.0/16', '169.254.255.255',
-    // Private IPv6 ranges
-    'fc00::/7', 'fe80::/10',
-  ];
-  
-  // Check for exact matches first
-  if (['localhost', '127.0.0.1', '::1', '0.0.0.0'].includes(hostname)) {
-    throw new Error('fetch to localhost/internal addresses not allowed');
-  }
-  
-  // Check if hostname falls within private IP ranges
-  function isPrivateIp(host) {
-    // IPv4: 10.0.0.0/8
-    if (/^10\./.test(host)) return true;
-    // IPv4: 172.16.0.0/12
-    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\. /.test(host)) return true;
-    // IPv4: 192.168.0.0/16
-    if (/^192\.168\./.test(host)) return true;
-    // IPv4: 169.254.0.0/16 (link-local)
-    if (/^169\.254\./.test(host)) return true;
-    // IPv6: fc00::/7 (unique local address)
-    if (/^[fF][cC]/i.test(host)) return true;
-    // IPv6: fe80::/10 (link-local)
-    if (/^[fF][eE][89abAB]/i.test(host)) return true;
-    return false;
-  }
-  
-  if (isPrivateIp(hostname)) {
-    throw new Error('fetch to private/internal network addresses not allowed');
-  }
-  
-  // Block known cloud metadata endpoints
-  const metadataEndpoints = [
-    '169.254.169.254', // AWS metadata
-    'metadata.google.internal', // GCP metadata
-    '169.254.170.2', // AWS ECS task metadata
-  ];
-  if (metadataEndpoints.includes(hostname)) {
-    throw new Error('fetch to cloud metadata endpoints not allowed');
-  }
-  
-  const response = await fetch(parsed, { signal: AbortSignal.timeout(20000), redirect: 'follow' });
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > 1024 * 1024) throw new Error('response is too large (max 1 MiB)');
+
+  const response = await fetchPublic(parsed);
+  const bytes = await readLimited(response, MAX_FETCH_BYTES);
   return {
     code: response.ok ? 0 : response.status,
     stdout: bytes.toString('utf8'),
@@ -713,6 +795,19 @@ function ptySessionKey(modId, session) {
   return `${modId}:${session}`;
 }
 
+// The terminal inherits the app's environment minus anything that looks like a credential.
+const SENSITIVE_ENV = /(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIALS?|PRIVATE|API_?KEY|ACCESS_?KEY|AUTH)(_|$)|^(AWS|AZURE|GCP|GOOGLE_APPLICATION|GITHUB|GITLAB|NPM|SSH|GPG)_|_KEY$/i;
+
+function terminalEnvironment() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || SENSITIVE_ENV.test(key)) continue;
+    env[key] = value;
+  }
+  env.TERM = 'xterm-256color';
+  return env;
+}
+
 ipcMain.handle('pty:listShells', (event, { modId }) => {
   const callerModId = validateModContext(event, modId);
   requireEnabledPermission(callerModId, 'pty.access');
@@ -732,45 +827,8 @@ ipcMain.handle('pty:spawn', (event, { modId, session, shellId, cols, rows, cwd }
   const workingDirectory = modFilesystem.resolvePath(callerModId, cwd || '');
   fs.mkdirSync(workingDirectory, { recursive: true });
   
-  // Filter sensitive environment variables to prevent secret exposure
-  // Only pass essential, non-sensitive environment variables to the PTY
-  const safeEnv = {
-    // Keep basic system variables
-    HOME: process.env.HOME,
-    USER: process.env.USER,
-    USERNAME: process.env.USERNAME,
-    PATH: process.env.PATH,
-    SHELL: process.env.SHELL,
-    LANG: process.env.LANG,
-    LC_ALL: process.env.LC_ALL,
-    TERM: process.env.TERM,
-    
-    // Keep minimal OS-specific variables
-    ...(process.platform === 'win32' ? {
-      SYSTEMROOT: process.env.SystemRoot,
-      WINDIR: process.env.WINDIR,
-    } : {}),
-  };
-  
-  // Filter out any variables that might contain secrets
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key, value]) => {
-      const sensitivePrefixes = [
-        'AWS_', 'SECRET_', 'TOKEN_', 'PASS', 'PASSWORD', 'KEY', 'CREDENTIAL',
-        'API_', 'ACCESS_', 'PRIVATE_', 'SSH_', 'GITHUB_', 'GITLAB_',
-      ];
-      const sensitiveKeys = [
-        'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
-        'NPM_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN',
-      ];
-      
-      const isSensitive = sensitivePrefixes.some(prefix => key.startsWith(prefix)) ||
-                          sensitiveKeys.includes(key);
-      
-      return !isSensitive;
-    })
-  );
-  
+  const env = terminalEnvironment();
+
   const terminal = pty.spawn(shell.path, shell.args, {
     name: 'xterm-256color',
     cols: Math.max(1, Math.min(500, Number(cols) || 80)),
@@ -803,7 +861,7 @@ ipcMain.handle('pty:resize', (event, { modId, session, cols, rows }) => {
 
 ipcMain.handle('pty:kill', (event, { modId, session }) => {
   const callerModId = validateModContext(event, modId);
-  requirePermission(callerModId, 'pty.access');
+  requireEnabledPermission(callerModId, 'pty.access');
   const key = ptySessionKey(callerModId, session);
   ptySessions.get(key)?.terminal.kill();
   ptySessions.delete(key);

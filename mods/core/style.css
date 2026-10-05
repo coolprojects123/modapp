@@ -130,7 +130,8 @@
   gap: 10px;
 }
 
-.theme-preset-select {
+/* Two classes so this beats `.settings-select { max-width: 190px }` further down. */
+.theme-preset-row .theme-preset-select {
   flex: 1;
   max-width: none;
 }
@@ -334,7 +335,7 @@
 
 /* ---------------- global effect this mod adds ---------------- */
 
-/* The base site has no opinion on motion \u2014 this mod adds the toggle,
+/* The base site has no opinion on motion — this mod adds the toggle,
    so this mod is what the toggle actually does. */
 body.reduce-motion *,
 body.reduce-motion *::before,

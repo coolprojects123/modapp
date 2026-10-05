@@ -1,5 +1,10 @@
 // Music Player Mod - Upload and play audio/video files with ID3 tag support
 
+// Mod scripts are classic <script> tags that share one global scope, so everything here lives
+// inside a function: a top-level const/let/class (like MOD_ID) in two mods is a SyntaxError that
+// stops the second mod from loading at all.
+(function () {
+
 // Captured now, at load time -- by the time registerTab's render() runs
 // later (on tab click), bootstrap.js has moved on and ModAPI.modId no
 // longer reflects this mod. Needed for the streaming tab's native webview
@@ -603,7 +608,7 @@ function mountStreamingView(container) {
     if (!hasWebview) return;
     hasWebview = false;
     try {
-      await window.ModAPI.native.webview.close(MOD_ID, INSTANCE);
+      await window.ModAPI.native.webview.close(INSTANCE);
     } catch (err) {
       // Already gone / never fully created -- safe to ignore.
     }
@@ -614,7 +619,7 @@ function mountStreamingView(container) {
     const bounds = computeBounds();
     if (!bounds) return;
     try {
-      await window.ModAPI.native.webview.setBounds(MOD_ID, INSTANCE, bounds);
+      await window.ModAPI.native.webview.setBounds(INSTANCE, bounds.x, bounds.y, bounds.width, bounds.height);
     } catch (err) {
       console.warn('[music-player] failed to reposition streaming webview:', err);
     }
@@ -641,7 +646,7 @@ function mountStreamingView(container) {
 
   function setWebviewVisible(visible) {
     if (!hasWebview) return;
-    window.ModAPI.native.webview.setVisible(MOD_ID, INSTANCE, visible).catch(() => {});
+    window.ModAPI.native.webview.setVisible(INSTANCE, visible).catch(() => {});
   }
 
   // Called whenever something might have changed this tab's visibility
@@ -745,7 +750,7 @@ function mountStreamingView(container) {
     await destroyWebview();
 
     try {
-      await window.ModAPI.native.webview.create(MOD_ID, INSTANCE, { url: normalized, ...bounds, container: embedArea });
+      await window.ModAPI.native.webview.create(INSTANCE, { url: normalized, ...bounds, container: embedArea });
       hasWebview = true;
       // Bounds above may have been the 0x0 fallback if this tab was still
       // hidden during the initial call -- force a fresh measurement now
@@ -1477,3 +1482,5 @@ ModAPI.registerTab({
   icon: 'music_note',
   render: renderMusicPlayer,
 });
+
+})();

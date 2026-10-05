@@ -8,7 +8,21 @@
 // the original methods remain available
 const originalAppAPI = window.appAPI || {};
 
+// The Updates section calls these. They only fill in when the shell hasn't already provided them.
+const updateAPI = {
+  async checkForUpdates() {
+    if (window.electronAPI?.checkForUpdates) return await window.electronAPI.checkForUpdates();
+    return { available: false, configured: false };
+  },
+
+  async installUpdate() {
+    if (window.electronAPI?.installUpdate) return await window.electronAPI.installUpdate();
+    return { installed: false, available: false };
+  },
+};
+
 window.appAPI = {
+  ...updateAPI,
   ...originalAppAPI,
   
   /**

@@ -49,3 +49,26 @@ test('absolute paths are rejected for security', (context) => {
   permissions.add('fs.write');
   assert.throws(() => filesystem.writeFile('demo', outside, 'allowed'), /absolute paths are not allowed/);
 });
+
+test('mods that are unknown or disabled are rejected', (context) => {
+  const { root, filesystem } = setup();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => filesystem.readFile('other', 'notes.txt'), /unknown mod/);
+  assert.throws(() => filesystem.readFile('../demo', 'notes.txt'), /invalid mod id/);
+});
+
+test('symlinks cannot be used to escape the data directory', (context) => {
+  const { root, dataDir, filesystem } = setup();
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside);
+  fs.mkdirSync(path.join(dataDir, 'demo'), { recursive: true });
+  try {
+    fs.symlinkSync(outside, path.join(dataDir, 'demo', 'link'), 'junction');
+  } catch {
+    context.skip('symlinks are not available here');
+    return;
+  }
+  assert.throws(() => filesystem.writeFile('demo', 'link/escaped.txt', 'blocked'), /escapes/);
+  assert.equal(fs.existsSync(path.join(outside, 'escaped.txt')), false);
+});

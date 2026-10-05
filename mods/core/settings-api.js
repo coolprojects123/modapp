@@ -12,8 +12,7 @@
  *
  * That's the whole API. No field schemas, no built-in persistence, no
  * grouping, no "go to this section" wiring -- your render(container) owns
- * its own UI and its own saving (e.g. via ModAPI.native.fs),
- * the same way calendar's own settings.js does).
+ * its own UI and its own saving (e.g. via ModAPI.native.fs), the same way calendar's own settings.js does.
  */
 (function () {
   'use strict';
@@ -32,7 +31,10 @@
     // width/height are optional CSS size strings (e.g. '640px'); the panel
     // resizes to them while this section is open, and back to the default
     // Settings size for any section that doesn't set one.
-    sections.push({ id, label: label || id, icon: icon || 'tune', width: width || null, height: height || null, render });
+    const section = { id, label: label || id, icon: icon || 'tune', width: width || null, height: height || null, render };
+    const existing = sections.findIndex((item) => item.id === id);
+    if (existing >= 0) sections[existing] = section; // registering the same id again replaces it
+    else sections.push(section);
     document.dispatchEvent(new CustomEvent('mods:settings-sections-changed'));
   }
 

@@ -18,7 +18,7 @@
   const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ESC[c]);
 
   const FENCE_RE = /^\s*(```|~~~)\s*[\w+-]*\s*$/;
-  const HEADING_RE = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const HEADING_RE = /^(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/;
   const HR_RE = /^\s*([-*_])(\s*\1){2,}\s*$/;
   const QUOTE_RE = /^\s*>/;
   const LIST_RE = /^(\s*)([-*+]|\d+[.)])\s+/;
@@ -34,8 +34,13 @@
     });
 
     text = text
-      .replace(/\[([^\]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/gi,
-        (_m, label, url) => `<a href="${url}" data-md-link rel="noopener noreferrer">${label}</a>`)
+      .replace(/\[([^\]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/gi, (_m, label, url) => {
+        // Stash the tags like code spans so the emphasis passes below can't mangle URLs containing * _ or ~~.
+        codes.push(`<a href="${url}" data-md-link rel="noopener noreferrer">`);
+        const open = codes.length - 1;
+        codes.push('</a>');
+        return `\u0000${open}\u0000${label}\u0000${codes.length - 1}\u0000`;
+      })
       .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>')
       .replace(/(?<![\w_])__(?=\S)([\s\S]*?\S)__(?![\w_])/g, '<strong>$1</strong>')
       .replace(/(?<![*\w])\*(?![\s*])([^*\n]+?)(?<!\s)\*(?!\*)/g, '<em>$1</em>')
@@ -164,7 +169,8 @@
   }
 
   function renderMarkdown(text) {
-    return blocks(String(text ?? '').replace(/\r\n?/g, '\n').split('\n'));
+    // NUL is the placeholder delimiter in inline(), so it must not appear in the input.
+  return blocks(String(text ?? '').replace(/\0/g, '').replace(/\r\n?/g, '\n').split('\n'));
   }
 
   function openLink(href) {

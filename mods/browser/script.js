@@ -48,7 +48,7 @@
     const text = input.trim();
     if (!text) return '';
     if (/^https?:\/\//i.test(text)) return text;
-    if (/^localhost(:\d+)?(\/.*)?$/i.test(text)) return `http://${text}`;
+    if (/^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/.*)?$/i.test(text)) return `http://${text}`;
     if (/^([\w-]+\.)+[a-z]{2,}(:\d+)?(\/.*)?$/i.test(text)) return `https://${text}`;
     return SEARCH_URL + encodeURIComponent(text);
   }
@@ -88,10 +88,10 @@
   }
 
   // The main process checks the permission, that the mod is enabled, and that the URL is http(s).
-  // Each mod automatically uses its own ID - no need to pass MOD_ID
+  // ModAPI.native sends this mod's id with the call; no id is passed or defaulted here.
   async function gate(tab) {
-    const api = window.electronAPI?.webview;
-    if (api?.create) await api.create(tab.id, tab.url);
+    const webview = ModAPI.native?.webview;
+    if (webview?.authorize) await webview.authorize(tab.id, tab.url);
   }
 
   // ------------------------------------------------------------------- build
@@ -281,16 +281,9 @@
       view.className = 'br-view';
       view.setAttribute('partition', PARTITION);
       view.setAttribute('src', tab.url);
-      
-      // Security: Disable Node.js integration and enable context isolation
-      view.setAttribute('nodeintegration', 'false');
-      view.setAttribute('contextisolation', 'true');
-      view.setAttribute('webgl', 'false');
-      view.setAttribute('allowpopups', 'false');
-      
-      // Prevent access to nodeIntegrationInWorker (CVE-2026-102676)
-      view.setAttribute('nodeintegrationinsubframes', 'false');
-      view.setAttribute('nodeintegrationinworker', 'false');
+      // No nodeintegration / allowpopups / contextisolation attributes here: Electron treats them as boolean
+      // attributes, so setting them to "false" would switch them ON. Node access, preloads and popups are
+      // locked down in main.js (will-attach-webview and the webview window-open handler).
 
       let titleFrame = 0;
       view.addEventListener('page-title-updated', (e) => {
@@ -387,7 +380,12 @@
       tab.url = url;
       tab.title = '';
       if (tab.view) {
-        Promise.resolve(tab.view.loadURL(url)).catch(() => { /* navigation aborted or superseded */ });
+        try {
+          Promise.resolve(tab.view.loadURL(url)).catch(() => { /* navigation aborted or superseded */ });
+        } catch {
+          // loadURL throws until the webview has fired dom-ready; setting src is always safe.
+          tab.view.setAttribute('src', url);
+        }
       } else {
         wake(tab);
       }
@@ -404,7 +402,9 @@
     reloadBtn.addEventListener('click', () => {
       const tab = active();
       if (!tab?.view) return;
-      if (tab.loading) tab.view.stop(); else tab.view.reload();
+      try {
+        if (tab.loading) tab.view.stop(); else tab.view.reload();
+      } catch { /* page not ready yet */ }
     });
     urlInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') { go(urlInput.value); urlInput.blur(); }
