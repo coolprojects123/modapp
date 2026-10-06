@@ -139,6 +139,24 @@ function ensureRuntimeSettingsFiles() {
   }
 }
 
+// The packaged app ships its mods read-only (extraResources -> process.resourcesPath/mods).
+// Copy them into the writable mods folder (userData/mods) on every launch.
+const bundledModsDir = path.join(process.resourcesPath || '', 'mods');
+
+function syncBundledMods() {
+  if (isDev || !fs.existsSync(bundledModsDir)) return;
+  fs.mkdirSync(modsDir, { recursive: true });
+
+  for (const entry of fs.readdirSync(bundledModsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    fs.cpSync(path.join(bundledModsDir, entry.name), path.join(modsDir, entry.name), {
+      recursive: true,
+      force: true,
+    });
+  }
+}
+
+syncBundledMods();
 ensureRuntimeSettingsFiles();
 
 function readJson(filePath, fallback) {

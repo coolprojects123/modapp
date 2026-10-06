@@ -59,7 +59,7 @@
       "package.json",
       "!**/*.map"
     ],
-    "resources": [
+    "extraResources": [
       "mods/**"
     ],
     "publish": {
