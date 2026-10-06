@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   defaultTab: 'home',
   accentColor: '#3b82f6',
   reduceMotion: false,
+  updateModal: true, // show the update pop-up on startup (off = small notice instead)
   themeVars: {},
 };
 
@@ -115,7 +116,7 @@ function applySettingsToShell(settings) {
 const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General', icon: 'tune', width: '480px', height: '520px', render: renderGeneralSection },
   { id: 'mods', label: 'Mods', icon: 'extension', width: '480px', height: '440px', render: renderModsSection },
-  { id: 'updates', label: 'Updates', icon: 'update', width: '480px', height: '260px', render: renderUpdatesSection },
+  { id: 'updates', label: 'Updates', icon: 'update', width: '480px', height: '340px', render: renderUpdatesSection },
 ];
 
 // Every CSS var the shell exposes for theming (colors only -- fonts are a
@@ -445,15 +446,58 @@ function showUpdateDialog(info) {
   });
 }
 
+// A small non-modal notice for "an update is available". It is what the user sees when the startup
+// pop-up is turned off (Settings > Updates), and after they pick "Later" on the pop-up. Clicking it opens
+// the same dialog, which is where they request the install.
+let updateBadge = null;
+
+function showUpdateBadge(info) {
+  if (updateBadge?.isConnected) return;
+  const badge = document.createElement('div');
+  badge.className = 'update-badge';
+  badge.innerHTML = `
+    <button type="button" class="update-badge-main" title="View release notes and install">
+      <span class="update-badge-icon" aria-hidden="true">system_update_alt</span>
+      <span class="update-badge-text"></span>
+    </button>
+    <button type="button" class="update-badge-close" aria-label="Dismiss" title="Dismiss">\u00d7</button>
+  `;
+  badge.querySelector('.update-badge-text').textContent = `Update ${info.version} available`;
+  badge.querySelector('.update-badge-main').addEventListener('click', () => showUpdateDialog(info));
+  badge.querySelector('.update-badge-close').addEventListener('click', () => badge.remove());
+  document.body.appendChild(badge);
+  updateBadge = badge;
+}
+
 async function renderUpdatesSection(container) {
   container.innerHTML = `
     <div class="settings-section-title">Updates</div>
     <p class="muted update-status">Checking for updates\u2026</p>
     <button type="button" class="theme-reset-btn update-action-btn" style="display:none;"></button>
+    <div class="settings-field-wrap update-pref">
+      <div class="settings-field">
+        <div class="settings-field-text">
+          <label class="settings-field-label" for="update-modal-toggle">Show update pop-up</label>
+          <div class="settings-field-desc">Open the update window at startup when a new version is available. When off, a small notice appears instead.</div>
+        </div>
+        <input type="checkbox" id="update-modal-toggle" class="update-modal-toggle" checked>
+      </div>
+    </div>
   `;
 
   const status = container.querySelector('.update-status');
   const actionBtn = container.querySelector('.update-action-btn');
+  const modalToggle = container.querySelector('.update-modal-toggle');
+
+  loadSettings().then((saved) => { modalToggle.checked = saved.updateModal !== false; }).catch(() => {});
+  modalToggle.addEventListener('change', async () => {
+    try {
+      await writeSettings({ updateModal: modalToggle.checked });
+    } catch (error) {
+      console.error('Failed to save update pop-up setting:', error);
+      modalToggle.checked = !modalToggle.checked;
+    }
+  });
 
   async function check() {
     status.textContent = 'Checking for updates\u2026';
@@ -695,7 +739,12 @@ async function checkForUpdatesOnStartup() {
   if (!window.appAPI?.checkForUpdates) return;
   try {
     const result = await window.appAPI.checkForUpdates();
-    if (result?.available) await showUpdateDialog(result);
+    if (!result?.available) return;
+    const prefs = await loadSettings();
+    // Pop-up on (the default): show it, and leave the notice behind if they pick "Later".
+    // Pop-up off: just the notice.
+    if (prefs.updateModal !== false) await showUpdateDialog(result);
+    showUpdateBadge(result);
   } catch (error) {
     console.error('Update check failed:', error);
   }

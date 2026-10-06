@@ -591,3 +591,67 @@ body.reduce-motion *::after {
 .md table { border-collapse: collapse; font-size: 12px; }
 .md th, .md td { padding: 5px 10px; border: 1px solid var(--border); text-align: left; }
 .md th { background: var(--panel); font-weight: 600; }
+
+/* ---------------- update notice (shown when the pop-up is off, or after "Later") ---------------- */
+
+.update-badge {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9000; /* below .update-overlay (10000) so the dialog opens on top of it */
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.6);
+}
+
+.update-badge button {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.update-badge button:hover { background: var(--panel-2); }
+.update-badge button:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.update-badge-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px 8px 14px;
+  font-weight: 600;
+}
+
+.update-badge-icon {
+  font-family: 'Material Symbols Outlined';
+  font-size: 18px;
+  color: var(--accent);
+}
+
+.update-badge-close {
+  padding: 0 12px;
+  font-size: 16px;
+  color: var(--muted);
+}
+
+/* ---------------- update pop-up preference (Settings > Updates) ---------------- */
+
+.update-pref {
+  margin-top: 16px;
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+}
+
+.settings-field input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
