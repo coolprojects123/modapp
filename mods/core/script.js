@@ -632,7 +632,6 @@ ModAPI.registerWidget({
   label: 'Settings',
   icon: 'settings',
   center: true,
-  overlay: true,
   width: '680px',
   height: '600px',
 
