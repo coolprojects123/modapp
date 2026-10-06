@@ -1,5 +1,5 @@
 // Electron main process: owns app data, permission checks, and native services.
-const { app, BrowserWindow, components } = require('electron');
+const { app, BrowserWindow, Menu, clipboard, components } = require('electron');
 // `components` only exists on the castlabs Electron build (Widevine); it is undefined on stock Electron.
 const { ipcMain } = require('electron');
 const { dialog, Notification } = require('electron');
@@ -440,7 +440,47 @@ function desktopUserAgent() {
   return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
+// Right-click menu for the app window and every webview, in place of the menu bar.
+function attachContextMenu(contents) {
+  contents.on('context-menu', (_event, params) => {
+    const { editFlags } = params;
+    const isWebview = contents.getType() === 'webview';
+    const items = [];
+
+    if (params.linkURL) {
+      items.push({ label: 'Copy link address', click: () => clipboard.writeText(params.linkURL) }, { type: 'separator' });
+    }
+    if (params.isEditable) {
+      items.push(
+        { role: 'undo', enabled: editFlags.canUndo },
+        { role: 'redo', enabled: editFlags.canRedo },
+        { type: 'separator' },
+        { role: 'cut', enabled: editFlags.canCut },
+      );
+    }
+    if (params.isEditable || params.selectionText) items.push({ role: 'copy', enabled: editFlags.canCopy });
+    if (params.isEditable) items.push({ role: 'paste', enabled: editFlags.canPaste });
+    items.push({ role: 'selectAll' });
+
+    if (isWebview) {
+      const history = contents.navigationHistory;
+      items.push(
+        { type: 'separator' },
+        { label: 'Back', enabled: history.canGoBack(), click: () => history.goBack() },
+        { label: 'Forward', enabled: history.canGoForward(), click: () => history.goForward() },
+        { label: 'Reload', click: () => contents.reload() },
+      );
+    }
+    if (isDev) {
+      items.push({ type: 'separator' }, { label: 'Inspect element', click: () => contents.inspectElement(params.x, params.y) });
+    }
+
+    Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(contents.hostWebContents || contents) || undefined });
+  });
+}
+
 app.on('web-contents-created', (_event, contents) => {
+  attachContextMenu(contents);
   if (contents.getType() === 'window') {
     // The app window enables <webview>. Never let a webview be attached with Node access or its own
     // preload, and only allow http(s) pages; keep the app window itself on the app's own page.
@@ -506,8 +546,18 @@ app.whenReady().then(async () => {
   // full Widevine support automatically if you later switch back to the
   // castlabs build.
   if (components && typeof components.whenReady === 'function') {
+    const cdmVersion = () => components.status()?.[components.WIDEVINE_CDM_ID]?.version;
+    const hadCdm = !!cdmVersion();
     await components.whenReady();
     console.log('components ready:', components.status());
+    // On Linux a CDM that was just installed for the first time can't be used until the app restarts
+    // (sandboxing), so DRM sites would fail on the very first run. Relaunch once to pick it up.
+    if (process.platform === 'linux' && !hadCdm && cdmVersion()) {
+      console.log('[widevine] CDM installed for the first time; relaunching so Linux can load it');
+      app.relaunch(process.env.APPIMAGE ? { execPath: process.env.APPIMAGE } : undefined);
+      app.exit(0);
+      return;
+    }
   } else {
     console.warn(
       '[widevine] app.components is not available on this Electron build. ' +
@@ -517,6 +567,11 @@ app.whenReady().then(async () => {
       '(EMEError: Platform does not support navigator.requestMediaKeySystemAccess).'
     );
   }
+  // No menu bar. Windows/Linux get none; macOS can't drop its top bar, so keep a minimal one
+  // (it is also what makes Cmd+C/V work there).
+  Menu.setApplicationMenu(process.platform === 'darwin'
+    ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }])
+    : null);
   createWindow();
 });
 
