@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const MOD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -25,6 +25,14 @@ function createBoundApi(modId) {
 
   return Object.freeze({
     toggleMod: (id) => call('mods:toggle', { id }),
+    mods: {
+      install: (kind) => call('mods:install', { kind }), // 'zip' (default) or 'folder'
+      installPath: (filePath) => call('mods:installPath', { path: filePath }),
+      installUrl: (url) => call('mods:installUrl', { url }),
+      pathForFile: (file) => webUtils.getPathForFile(file), // dropped File -> real path
+      remove: (id) => call('mods:remove', { id }),
+      reorder: (order) => call('mods:reorder', { order }),
+    },
     readSettings: () => call('settings:read'),
     writeSettings: (changes) => call('settings:write', { changes }),
 

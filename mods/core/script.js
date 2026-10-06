@@ -115,7 +115,7 @@ function applySettingsToShell(settings) {
 
 const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General', icon: 'tune', width: '480px', height: '520px', render: renderGeneralSection },
-  { id: 'mods', label: 'Mods', icon: 'extension', width: '480px', height: '440px', render: renderModsSection },
+  { id: 'mods', label: 'Mods', icon: 'extension', width: '640px', height: 'min(650px, 90vh)', contentHeight: 'min(600px, calc(90vh - 50px))', render: renderModsSection },
   { id: 'updates', label: 'Updates', icon: 'update', width: '480px', height: '340px', render: renderUpdatesSection },
 ];
 
@@ -533,83 +533,270 @@ async function renderUpdatesSection(container) {
   check();
 }
 
-async function renderModsSection(container) {
+// A file dropped anywhere else must not make the window navigate to it.
+for (const type of ['dragover', 'drop']) {
+  document.addEventListener(type, (event) => {
+    if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault();
+  });
+}
+
+// IPC errors arrive as "Error invoking remote method 'x': Error: message"; show just the message.
+const cleanError = (error) => String(error?.message || error).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
+
+// The "Install mod" pop-up: pick where the mod comes from. Resolves with { kind: 'zip' | 'folder' },
+// { kind: 'url', url }, or null if cancelled. The actual file/folder picking happens in a native dialog afterwards.
+function chooseModSource() {
+  const SOURCES = {
+    zip: { label: 'Zip file', text: 'Pick a .zip file from your computer.', action: 'Choose zip…' },
+    folder: { label: 'Folder', text: 'Pick a mod folder, the one that contains mod.json.', action: 'Choose folder…' },
+    url: {
+      label: 'Zip URL',
+      text: 'Paste a link to a .zip file, or to a GitHub repository (github.com/owner/repo, a branch or a release tag).',
+      action: 'Install',
+    },
+  };
+
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'update-overlay';
+    overlay.innerHTML = `
+      <div class="update-dialog install-dialog" role="dialog" aria-modal="true" aria-labelledby="install-title">
+        <h2 class="update-title" id="install-title">Install a mod</h2>
+        <div class="install-tabs">
+          ${Object.entries(SOURCES).map(([kind, source]) => `
+            <button type="button" class="install-tab" data-kind="${kind}" aria-pressed="false">${source.label}</button>`).join('')}
+        </div>
+        <p class="install-text"></p>
+        <input type="text" class="settings-input install-url" placeholder="https://example.com/my-mod.zip"
+          spellcheck="false" aria-label="Zip or GitHub link" hidden>
+        <p class="update-message error install-error"></p>
+        <div class="update-actions">
+          <span class="update-spacer"></span>
+          <button type="button" class="theme-reset-btn" data-cancel>Cancel</button>
+          <button type="button" class="save-btn install-go"></button>
+        </div>
+      </div>
+    `;
+
+    const text = overlay.querySelector('.install-text');
+    const input = overlay.querySelector('.install-url');
+    const error = overlay.querySelector('.install-error');
+    const go = overlay.querySelector('.install-go');
+    let kind = 'zip';
+
+    const finish = (value) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      previousFocus?.focus?.();
+      resolve(value);
+    };
+
+    const select = (next) => {
+      kind = next;
+      overlay.querySelectorAll('.install-tab').forEach((tab) => tab.setAttribute('aria-pressed', String(tab.dataset.kind === kind)));
+      text.textContent = SOURCES[kind].text;
+      go.textContent = SOURCES[kind].action;
+      input.hidden = kind !== 'url';
+      error.textContent = '';
+      (kind === 'url' ? input : go).focus();
+    };
+
+    const submit = () => {
+      if (kind !== 'url') return finish({ kind });
+      const url = input.value.trim();
+      if (!url) { error.textContent = 'Paste a link first.'; input.focus(); return; }
+      finish({ kind: 'url', url });
+    };
+
+    const onKey = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(null); }
+      else if (event.key === 'Enter' && event.target === input) { event.preventDefault(); submit(); }
+    };
+
+    overlay.querySelectorAll('.install-tab').forEach((tab) => tab.addEventListener('click', () => select(tab.dataset.kind)));
+    overlay.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+    go.addEventListener('click', submit);
+    document.addEventListener('keydown', onKey, true);
+
+    document.body.appendChild(overlay);
+    select('zip');
+  });
+}
+
+async function renderModsSection(container, notice = '', noticeIsError = false) {
   container.innerHTML = '<p class="muted">Loading mods…</p>';
 
   try {
     const mods = await window.appAPI.listMods();
-
-    if (!Array.isArray(mods) || mods.length === 0) {
-      container.innerHTML = `
-        <div class="settings-section-title">Mods</div>
-        <p class="muted">No mods found.</p>
-      `;
-      return;
-    }
+    const list = Array.isArray(mods) ? mods : [];
+    // Core is always first and can't be moved or deleted; the arrows only reorder the rest.
+    const movable = list.filter((mod) => !mod.core).map((mod) => mod.id);
 
     container.innerHTML = `
       <div class="settings-section-title">Mods</div>
 
+      <div class="mods-toolbar">
+        <button type="button" class="save-btn" data-install>Install mod…</button>
+        <span class="settings-note muted mods-hint">or drop a .zip or a folder here. Drag mods to change their load order.</span>
+      </div>
+      <p class="settings-note muted mods-message" role="status"></p>
+
+      ${list.length === 0 ? '<p class="muted">No mods found.</p>' : `
       <div class="mod-list">
-        ${mods.map((mod) => `
-          <div class="mod-row">
-            <span
-              class="connector"
-              style="background:${colorForId(mod.id)}"
-            ></span>
+        ${list.map((mod) => {
+          const position = movable.indexOf(mod.id);
+          return `
+          <div class="mod-row" ${mod.core ? '' : `draggable="true" data-mod-id="${escapeHtml(mod.id)}"`}>
+            <span class="mod-handle" aria-hidden="true">${mod.core ? '' : 'drag_indicator'}</span>
+            <span class="connector" style="background:${colorForId(mod.id)}"></span>
 
             <div class="mod-info">
-              <div class="mod-name">
-                ${escapeHtml(mod.name || mod.id)}
-              </div>
-
-              <div class="mod-desc">
-                ${escapeHtml(mod.description || '')}
-              </div>
+              <div class="mod-name">${escapeHtml(mod.name || mod.id)}</div>
+              <div class="mod-desc">${escapeHtml(mod.description || '')}</div>
             </div>
 
-            ${
-              mod.core
-                ? '<span class="core-badge">Core</span>'
-                : `
-                  <button
-                    class="toggle ${mod.enabled ? 'on' : ''}"
-                    data-mod-id="${escapeHtml(mod.id)}"
-                    type="button"
-                  >
-                    ${mod.enabled ? 'On' : 'Off'}
-                  </button>
-                `
-            }
-          </div>
-        `).join('')}
-      </div>
+            ${mod.core ? '<span class="core-badge">Core</span>' : `
+              <div class="mod-actions">
+                <button type="button" class="mod-icon-btn" data-move="-1" data-mod-id="${escapeHtml(mod.id)}"
+                  aria-label="Load earlier" title="Load earlier" ${position <= 0 ? 'disabled' : ''}>keyboard_arrow_up</button>
+                <button type="button" class="mod-icon-btn" data-move="1" data-mod-id="${escapeHtml(mod.id)}"
+                  aria-label="Load later" title="Load later" ${position === movable.length - 1 ? 'disabled' : ''}>keyboard_arrow_down</button>
+                <button type="button" class="mod-icon-btn danger" data-delete data-mod-id="${escapeHtml(mod.id)}"
+                  aria-label="Delete mod" title="Delete mod">delete</button>
+              </div>
+              <button class="toggle ${mod.enabled ? 'on' : ''}" data-mod-id="${escapeHtml(mod.id)}" type="button">
+                ${mod.enabled ? 'On' : 'Off'}
+              </button>`}
+          </div>`;
+        }).join('')}
+      </div>`}
     `;
 
-    container
-      .querySelectorAll('.toggle')
-      .forEach((button) => {
-        button.addEventListener('click', async () => {
-          const modId = button.dataset.modId;
+    const message = container.querySelector('.mods-message');
+    const setMessage = (text, isError = false) => {
+      message.textContent = text;
+      message.classList.toggle('error', isError);
+    };
+    setMessage(notice, noticeIsError);
 
-          button.disabled = true;
+    // One place for "do something, then redraw". Any change reloads the app when Settings closes.
+    const run = async (task, success) => {
+      container.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+      try {
+        const result = await task();
+        const nothingDone = result?.canceled || result?.removed === false || (Array.isArray(result) && result.length === 0);
+        if (nothingDone) return renderModsSection(container);
+        modsChanged = true;
+        return renderModsSection(container, typeof success === 'function' ? success(result) : success);
+      } catch (error) {
+        console.error('Mod change failed:', error);
+        return renderModsSection(container, cleanError(error), true);
+      }
+    };
 
-          try {
-            await window.appAPI.toggleMod(modId);
+    const installed = (result) => (Array.isArray(result)
+      ? `Installed ${result.map((item) => `"${item.name}"`).join(', ')}. ${result.length > 1 ? 'They load' : 'It loads'} when you close Settings.`
+      : `${result.replaced ? 'Replaced' : 'Installed'} "${result.name}". It loads when you close Settings.`);
 
-            modsChanged = true;
+    container.querySelector('[data-install]').addEventListener('click', async () => {
+      const choice = await chooseModSource();
+      if (!choice) return;
+      run(
+        () => (choice.kind === 'url' ? window.appAPI.installModFromUrl(choice.url) : window.appAPI.installMod(choice.kind)),
+        installed,
+      );
+    });
 
-            await renderModsSection(container);
-          } catch (error) {
-            console.error(
-              `Failed to toggle mod "${modId}":`,
-              error
-            );
+    container.querySelectorAll('.toggle').forEach((button) => {
+      button.addEventListener('click', () => run(() => window.appAPI.toggleMod(button.dataset.modId)));
+    });
 
-            button.disabled = false;
-          }
-        });
+    container.querySelectorAll('[data-move]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const order = [...movable];
+        const from = order.indexOf(button.dataset.modId);
+        const to = from + Number(button.dataset.move);
+        if (from < 0 || to < 0 || to >= order.length) return;
+        [order[from], order[to]] = [order[to], order[from]];
+        run(() => window.appAPI.reorderMods(order), 'Load order saved. It applies when you close Settings.');
       });
+    });
+
+    container.querySelectorAll('[data-delete]').forEach((button) => {
+      button.addEventListener('click', () => run(
+        () => window.appAPI.removeMod(button.dataset.modId),
+        'Mod deleted.',
+      ));
+    });
+
+    // ---- drag and drop ----
+    // 1) Drag a mod row to change its load order (Core is fixed at the top).
+    let draggedId = null;
+    const clearDropMarks = () => container.querySelectorAll('.drop-before, .drop-after')
+      .forEach((row) => row.classList.remove('drop-before', 'drop-after'));
+    // Where would the dragged mod land? Dropping on Core means "first", otherwise before/after the row under the pointer.
+    const dropTarget = (row, event) => {
+      if (row.classList.contains('core-row')) return { id: movable[0], after: false };
+      const box = row.getBoundingClientRect();
+      return { id: row.dataset.modId, after: event.clientY > box.top + box.height / 2 };
+    };
+
+    container.querySelectorAll('.mod-row').forEach((row) => {
+      if (!row.dataset.modId) row.classList.add('core-row');
+
+      row.addEventListener('dragstart', (event) => {
+        if (!row.dataset.modId) return;
+        draggedId = row.dataset.modId;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('application/x-modapp-mod', draggedId);
+        row.classList.add('dragging');
+      });
+      row.addEventListener('dragend', () => { draggedId = null; row.classList.remove('dragging'); clearDropMarks(); });
+
+      row.addEventListener('dragover', (event) => {
+        if (!draggedId) return; // a file drag is handled by the panel below
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const target = dropTarget(row, event);
+        clearDropMarks();
+        container.querySelector(`.mod-row[data-mod-id="${CSS.escape(target.id)}"]`)
+          ?.classList.add(target.after ? 'drop-after' : 'drop-before');
+      });
+      row.addEventListener('drop', (event) => {
+        if (!draggedId) return;
+        event.preventDefault();
+        const moving = draggedId;
+        const target = dropTarget(row, event);
+        draggedId = null;
+        clearDropMarks();
+        const order = movable.filter((id) => id !== moving);
+        const at = order.indexOf(target.id);
+        if (at < 0 || moving === target.id) return;
+        order.splice(target.after ? at + 1 : at, 0, moving);
+        if (order.join() === movable.join()) return;
+        run(() => window.appAPI.reorderMods(order), 'Load order saved. It applies when you close Settings.');
+      });
+    });
+
+    // 2) Drop a .zip or a folder anywhere on the panel to install it.
+    const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+    container.ondragover = (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      container.classList.add('mods-dropping');
+    };
+    container.ondragleave = (event) => {
+      if (!container.contains(event.relatedTarget)) container.classList.remove('mods-dropping');
+    };
+    container.ondrop = (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      container.classList.remove('mods-dropping');
+      const files = [...event.dataTransfer.files]; // read now: the list is cleared once the event ends
+      if (files.length) run(() => window.appAPI.installDroppedMods(files), installed);
+    };
   } catch (error) {
     console.error('Failed to load mods:', error);
 
@@ -650,7 +837,7 @@ ModAPI.registerWidget({
     // registration order. Each entry owns its own render(container).
     const registered = typeof ModAPI.getSettingsSections === 'function' ? ModAPI.getSettingsSections() : [];
     const entries = [
-      ...SETTINGS_SECTIONS.map((s) => ({ id: s.id, label: s.label, icon: s.icon, width: s.width, height: s.height, render: s.render })),
+      ...SETTINGS_SECTIONS.map((s) => ({ id: s.id, label: s.label, icon: s.icon, width: s.width, height: s.height, contentHeight: s.contentHeight, render: s.render })),
       ...registered.map((s) => ({
         id: `x:${s.id}`, label: s.label, icon: s.icon, width: s.width, height: s.height,
         render: (target) => ModAPI.renderSettingsSection(s, target),
@@ -692,6 +879,8 @@ ModAPI.registerWidget({
         panel.style.width = entry.width || DEFAULT_WIDTH;
         panel.style.height = entry.height || DEFAULT_HEIGHT;
       }
+      // Sections that want more room than the default scroll area (400px) say so with contentHeight.
+      content.style.maxHeight = entry.contentHeight || '';
 
       // A fresh pane per selection: sections render asynchronously, so a slow
       // one (General) must not paint over the section picked after it.

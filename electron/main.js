@@ -14,6 +14,11 @@ const dns = require('dns');
 const { pathToFileURL } = require('url');
 const pty = require('node-pty');
 const { createModFilesystem } = require('./mod-fs');
+const { createModManager, parseGithubUrl, parseZipUrl, downloadZipFile, downloadGithubZip, MOD_ID_PATTERN } = require('./mod-manager');
+
+// Dev runs keep all their data (settings, mod data, Chromium caches) in .dev-data next to the project, so they
+// don't share a folder with an installed copy of the app. Must happen before anything reads 'userData'.
+if (!app.isPackaged) app.setPath('userData', path.join(__dirname, '..', '.dev-data'));
 
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -118,6 +123,7 @@ const isDev = !app.isPackaged;
 const modsDir = isDev ? path.join(rootDir, 'mods') : path.join(app.getPath('userData'), 'mods');
 const settingsPath = path.join(modsDir, '.settings.json');
 const configPath = path.join(modsDir, '.config.json');
+const modManager = createModManager({ modsDir, configPath }); // install / delete / load order
 
 const defaultSettings = {
   siteTitle: 'modapp',
@@ -147,8 +153,9 @@ function syncBundledMods() {
   if (isDev || !fs.existsSync(bundledModsDir)) return;
   fs.mkdirSync(modsDir, { recursive: true });
 
+  const deleted = new Set(modManager.removedIds());
   for (const entry of fs.readdirSync(bundledModsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || deleted.has(entry.name)) continue;
     fs.cpSync(path.join(bundledModsDir, entry.name), path.join(modsDir, entry.name), {
       recursive: true,
       force: true,
@@ -176,8 +183,8 @@ function discoverMods() {
   let entries;
   try { entries = fs.readdirSync(modsDir, { withFileTypes: true }); }
   catch { return []; } // no mods folder yet (e.g. a fresh dev checkout)
-  return entries
-    .filter((entry) => entry.isDirectory())
+  const mods = entries
+    .filter((entry) => entry.isDirectory() && MOD_ID_PATTERN.test(entry.name))
     .map((entry) => {
       const id = entry.name;
       const manifestPath = path.join(modsDir, id, 'mod.json');
@@ -194,6 +201,7 @@ function discoverMods() {
       };
     })
     .filter(Boolean);
+  return modManager.sortMods(mods); // load order: core first, then the saved order
 }
 
 // ============================================================
@@ -229,6 +237,129 @@ ipcMain.handle('mods:toggle', (event, { modId, id }) => {
   config[id] = !mod.enabled;
   writeJson(configPath, config);
   return config[id];
+});
+
+// Upload (zip or folder), delete and reorder. Core can't be deleted or moved. Every change is confirmed or
+// picked in a native dialog owned by the main process, so a mod can't install or delete anything silently.
+const shortText = (value, fallback) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : fallback);
+
+// Shows what is about to be installed (name, author, source, permissions) and installs on confirmation.
+async function confirmAndCommit(staged, source) {
+  const name = shortText(staged.manifest.name, staged.id);
+  try {
+    const permissions = Array.isArray(staged.manifest.permissions) ? staged.manifest.permissions : [];
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: staged.exists ? 'Replace mod' : 'Install mod',
+      message: `${staged.exists ? 'Replace' : 'Install'} "${name}"?`,
+      detail: [
+        `Author: ${shortText(staged.manifest.author, 'unknown')}`,
+        `Source: ${source}`,
+        `Permissions: ${permissions.length ? permissions.slice(0, 40).join(', ') : 'none'}`,
+        '',
+        'Mods run code inside the app. Only install mods you trust.',
+        staged.exists ? 'The installed copy of this mod will be overwritten (its saved data is kept).' : '',
+      ].filter((line, index, lines) => line || lines[index - 1] !== '').join('\n'),
+      buttons: [staged.exists ? 'Replace' : 'Install', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response !== 0) { staged.cleanup(); return { canceled: true }; }
+  } catch (error) {
+    staged.cleanup();
+    throw error;
+  }
+  modManager.commit(staged);
+  return { canceled: false, id: staged.id, name, replaced: staged.exists };
+}
+
+// Pick a .zip or a folder in a native dialog.
+ipcMain.handle('mods:install', async (event, { modId, kind }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.manage');
+  const folder = kind === 'folder';
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: folder ? 'Choose a mod folder' : 'Choose a mod (.zip)',
+    properties: folder ? ['openDirectory'] : ['openFile'],
+    filters: folder ? undefined : [{ name: 'Mod', extensions: ['zip'] }],
+  });
+  if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
+  return confirmAndCommit(modManager.stage(picked.filePaths[0]), picked.filePaths[0]);
+});
+
+// A .zip or folder dropped onto the Mods panel (the renderer turns the dropped File into a path).
+ipcMain.handle('mods:installPath', async (event, { modId, path: droppedPath }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.manage');
+  if (typeof droppedPath !== 'string' || !path.isAbsolute(droppedPath)) throw new Error('invalid path');
+  return confirmAndCommit(modManager.stage(droppedPath), droppedPath);
+});
+
+// A link to a .zip file, or to a GitHub repository (default branch, /tree/<branch> or a release tag; the mod must
+// be at the top of the repo). Arbitrary links go through fetchPublic, which refuses private/internal addresses.
+ipcMain.handle('mods:installUrl', async (event, { modId, url }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.manage');
+  const text = String(url || '').trim();
+
+  let github = null;
+  if (!/\.zip([?#].*)?$/i.test(text)) {
+    try { github = parseGithubUrl(text); } catch { /* not a repository link: treat it as a direct zip link */ }
+  }
+
+  let zipPath;
+  let idHint;
+  let source;
+  if (github) {
+    zipPath = await downloadGithubZip(github);
+    idHint = github.repo;
+    source = `github.com/${github.owner}/${github.repo}${github.ref ? ` (${github.ref})` : ''}`;
+  } else {
+    const link = parseZipUrl(text);
+    zipPath = await downloadZipFile(link.url, {
+      fileName: link.fileName,
+      fetchImpl: (target) => fetchPublic(new URL(target)),
+    });
+    source = link.url.length > 90 ? `${link.url.slice(0, 87)}...` : link.url;
+  }
+
+  let staged;
+  try {
+    staged = modManager.stage(zipPath, { idHint });
+  } finally {
+    fs.rmSync(path.dirname(zipPath), { recursive: true, force: true });
+  }
+  return confirmAndCommit(staged, source);
+});
+
+ipcMain.handle('mods:remove', async (event, { modId, id }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.manage');
+  if (typeof id !== 'string' || !MOD_ID_PATTERN.test(id)) throw new Error('invalid mod id');
+  if (id === 'core') throw new Error('the core mod cannot be deleted');
+  const mod = discoverMods().find((item) => item.id === id);
+  if (!mod) throw new Error(`mod '${id}' is not installed`);
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Delete mod',
+    message: `Delete "${shortText(mod.name, id)}"?`,
+    detail: 'The mod\'s files are removed. Data it saved is kept in case you install it again.',
+    buttons: ['Delete', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (response !== 0) return { removed: false };
+  modManager.remove(id);
+  return { removed: true };
+});
+
+ipcMain.handle('mods:reorder', (event, { modId, order }) => {
+  const callerModId = validateModContext(event, modId);
+  requireEnabledPermission(callerModId, 'mods.manage');
+  modManager.saveOrder(order, discoverMods().map((item) => item.id));
+  return discoverMods().map((item) => item.id);
 });
 
 // Update flow. The renderer owns the confirmation UI (the Core mod's update dialog,

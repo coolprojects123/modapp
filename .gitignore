@@ -17,6 +17,10 @@ settings.json
 mods-config.json
 mods/**/.config.json
 mods/**/.settings.json
+mods/**/.order.json
+mods/**/.removed.json
+mods/.installing-*/
+.dev-data/
 
 # Local environment / editor
 .DS_Store
@@ -51,4 +55,3 @@ clean.bat
 # Random txt files
 secrets.txt
 remove-symlinks.ps1
-

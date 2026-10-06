@@ -21,6 +21,12 @@ const updateAPI = {
   },
 };
 
+function desktopMods() {
+  const mods = window.electronAPI?.forMod?.('core')?.mods;
+  if (!mods) throw new Error('Managing mods needs the desktop app.');
+  return mods;
+}
+
 window.appAPI = {
   ...updateAPI,
   ...originalAppAPI,
@@ -66,6 +72,35 @@ window.appAPI = {
 
   async toggleMod(id) {
     return await ModAPI.native.mods.toggle(id);
+  },
+
+  // Upload, delete and reorder go straight to the desktop bridge (Core holds the 'mods.manage' permission).
+  async installMod(kind = 'zip') {
+    return await desktopMods().install(kind);
+  },
+
+  async installModFromUrl(url) {
+    return await desktopMods().installUrl(url);
+  },
+
+  // Dropped files (from a drag-and-drop event) -> installs each one, asking for confirmation every time.
+  async installDroppedMods(files) {
+    const mods = desktopMods();
+    const results = [];
+    for (const file of files) {
+      const result = await mods.installPath(mods.pathForFile(file));
+      if (result?.canceled) break;
+      results.push(result);
+    }
+    return results;
+  },
+
+  async removeMod(id) {
+    return await desktopMods().remove(id);
+  },
+
+  async reorderMods(order) {
+    return await desktopMods().reorder(order);
   },
 
 };
