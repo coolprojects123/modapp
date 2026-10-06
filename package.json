@@ -54,11 +54,13 @@
     "files": [
       "electron/**",
       "public/**",
-      "mods/**",
       "mods-config.json",
       "settings.json",
       "package.json",
       "!**/*.map"
+    ],
+    "resources": [
+      "mods/**"
     ],
     "publish": {
       "provider": "github",
