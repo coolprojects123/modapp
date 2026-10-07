@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "electron": "git+https://github.com/castlabs/electron-releases.git#v44.5.1+wvcus",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.5.0"
   },
   "allowScripts": {
     "electron@44.5.1+wvcus": true,
