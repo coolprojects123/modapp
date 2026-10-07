@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>modapp documentation</title>
+<meta name="description" content="Documentation for modapp, a moddable Electron desktop app where everything visible comes from mods.">
+<style>
+:root{--bg:#fbfbfc;--panel:#f1f3f6;--line:#dde1e8;--text:#1b2230;--muted:#5d6779;--accent:#2563eb;--code:#eceff4}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1017;--panel:#141922;--line:#222a38;--text:#d7dce6;--muted:#8e98ab;--accent:#6ea0ff;--code:#171d28}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:20px}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;display:grid;grid-template-columns:250px minmax(0,1fr)}
+nav{position:sticky;top:0;height:100vh;overflow:auto;padding:24px 18px;background:var(--panel);border-right:1px solid var(--line)}
+nav .brand{font:700 20px/1 system-ui;margin:0 0 4px}
+nav small{color:var(--muted);display:block;margin-bottom:20px}
+nav a{display:block;padding:4px 10px;margin:1px 0;border-radius:6px;color:var(--muted);text-decoration:none;font-size:14px}
+nav a:hover{background:var(--code);color:var(--text)}
+main{padding:48px clamp(20px,5vw,64px) 96px;max-width:900px}
+h1{font-size:2.3rem;line-height:1.15;margin:0 0 12px;letter-spacing:-.02em}
+h2{font-size:1.45rem;margin:56px 0 12px;padding-top:24px;border-top:1px solid var(--line)}
+h3{font-size:1.05rem;margin:28px 0 6px}
+p,li{max-width:70ch}
+a{color:var(--accent)}
+code,pre{font:13.5px/1.55 ui-monospace,"Cascadia Mono",Consolas,monospace}
+code{background:var(--code);padding:1px 5px;border-radius:4px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;font-size:14.5px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.lede{font-size:1.15rem;color:var(--muted);max-width:60ch}
+.note{border-left:3px solid var(--accent);background:var(--panel);padding:10px 16px;border-radius:0 8px 8px 0;max-width:70ch}
+.shell{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;margin:24px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:14px}
+.shell div{padding:12px 14px;background:var(--panel)}
+.shell div:first-child{grid-column:1/-1;background:var(--code);font-weight:600}
+.shell div+div{border-top:1px solid var(--line)}
+.shell div:nth-child(n+3){border-left:1px solid var(--line)}
+.shell span{color:var(--muted);display:block;font-weight:400}
+footer{margin-top:64px;color:var(--muted);font-size:14px}
+@media (max-width:820px){body{display:block}nav{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}.shell{grid-template-columns:1fr}.shell div:nth-child(n+3){border-left:0}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<nav aria-label="Documentation">
+  <p class="brand">modapp</p><small>docs for v3.1.1</small>
+  <a href="#overview">Overview</a>
+  <a href="#run">Run and build</a>
+  <a href="#layout">Project layout</a>
+  <a href="#mods">Writing a mod</a>
+  <a href="#modapi">ModAPI</a>
+  <a href="#native">Native APIs and permissions</a>
+  <a href="#bundled">Bundled mods</a>
+  <a href="#updates">Updates</a>
+  <a href="#releases">Releases and CI</a>
+  <a href="#security">Security and trust</a>
+  <a href="#changelog">Changelog</a>
+  <a href="#status">About these docs</a>
+</nav>
+<main>
+<h1 id="overview">modapp</h1>
+<p class="lede">A lightweight Electron desktop app whose engine is genuinely bare: a top bar and an empty page. Everything you see, from the Home tab to the browser and the terminal, is a mod.</p>
+<div class="shell" aria-label="How the app is layered">
+  <div>modapp, loaded from local files (no web server)</div>
+  <div>Engine<span>bootstrap.js loads enabled mods and exposes ModAPI</span></div>
+  <div>Shell<span>site.js draws the top bar and an empty content area</span></div>
+  <div>Mods<span>register tabs and widgets, call native APIs through permissions</span></div>
+</div>
+<p>Since v2.0.0 modapp runs on a castLabs build of Electron (44.5.1+wvcus) so DRM sites such as Spotify can play inside the app. Windows and Linux packages are published; macOS is configured but not part of releases.</p>
+
+<h2 id="run">Run and build</h2>
+<pre><code>npm install
+npm start                 # launch in development
+npm test                  # node --test electron/*.test.js
+npm run build:windows     # NSIS installer
+npm run build:linux       # AppImage, deb, rpm</code></pre>
+<p>Bundled mods are copied into a writable <code>userData/mods</code> folder on every launch, so edits to a bundled mod are reset on the next start. Mods you add yourself in that folder are left alone.</p>
+
+<h2 id="layout">Project layout</h2>
+<table>
+<tr><th>Path</th><th>Purpose</th></tr>
+<tr><td><code>electron/main.js</code></td><td>Main process: windows, IPC handlers, permission checks, updater, terminals.</td></tr>
+<tr><td><code>electron/preload.js</code></td><td>The bridge exposed to the page as <code>electronAPI</code>.</td></tr>
+<tr><td><code>electron/mod-fs.js</code></td><td>Permission-checked mod filesystem, with tests in <code>electron/*.test.js</code>.</td></tr>
+<tr><td><code>electron/update-notes.js</code></td><td>Fetches release notes from GitHub and converts HTML to markdown.</td></tr>
+<tr><td><code>public/js/bootstrap.js</code></td><td>The engine: loads mods, defines <code>ModAPI</code>.</td></tr>
+<tr><td><code>public/js/site.js</code></td><td>The bare site: top bar plus blank content.</td></tr>
+<tr><td><code>public/js/mods.js</code></td><td>Fallback mod manifest registry.</td></tr>
+<tr><td><code>mods/&lt;id&gt;/</code></td><td>One folder per mod. The <code>core</code> folder is always enabled.</td></tr>
+<tr><td><code>build/evs-sign.js</code></td><td>afterSign hook that VMP-signs Windows builds.</td></tr>
+<tr><td><code>src-tauri/</code>, <code>scripts/</code></td><td>The retired Tauri backend (last used in v1.2.1) and helper scripts.</td></tr>
+</table>
+
+<h2 id="mods">Writing a mod</h2>
+<p>Create <code>mods/&lt;your-mod-id&gt;/</code> with a <code>mod.json</code>. The id is the folder name: letters, digits, <code>_</code> and <code>-</code>, up to 64 characters.</p>
+<pre><code>{
+  "name": "My Mod",
+  "version": "1.0.0",
+  "author": "you",
+  "description": "What it does",
+  "enabledByDefault": true,
+  "apis": ["api.js"],
+  "styles": ["style.css"],
+  "scripts": ["script.js"],
+  "permissions": ["fs.read", "fs.write"]
+}</code></pre>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>apis</code></td><td>Scripts loaded first, for every enabled mod, so other mods can use what they define.</td></tr>
+<tr><td><code>styles</code></td><td>Stylesheets, added after all <code>apis</code> have loaded.</td></tr>
+<tr><td><code>scripts</code></td><td>Loaded one after another, core first, so a mod can rely on earlier mods having run.</td></tr>
+<tr><td><code>permissions</code></td><td>Native capabilities the mod may use (see below). Without a permission the call is refused.</td></tr>
+</table>
+<p>Asset paths must stay inside the mod's own folder: no absolute paths, no schemes or drive letters, and no <code>..</code> segments.</p>
+<p class="note"><strong>Scope:</strong> mod scripts are plain script tags that share one global scope. A top-level <code>const</code> or <code>let</code> with the same name in two mods (for example <code>MOD_ID</code>) is a SyntaxError that stops the second script entirely. Wrap each script in an <code>(function () { ... })();</code> block.</p>
+
+<h2 id="modapi">ModAPI</h2>
+<p>Every mod script runs with a global <code>ModAPI</code>.</p>
+<pre><code>ModAPI.registerTab({
+  id: 'my-tab', label: 'My Tab', icon: 'star',   // Material Symbols Outlined name
+  fullBleed: true,                                // no padding or max-width, fills the height
+  render(container) { container.textContent = 'Hello'; },
+});
+
+ModAPI.registerWidget({
+  id: 'my-widget', label: 'My Widget', icon: 'bolt',
+  center: false, draggable: true, overlay: false,
+  width: '420px', height: null, noChrome: false,
+  mount(container, close) { container.textContent = 'In a panel'; },
+});
+
+ModAPI.overrideTab('my-tab', (container) =&gt; { /* replace how a tab renders */ });
+ModAPI.onTabActivate('my-tab', (container) =&gt; { /* layer something on top */ });
+ModAPI.setIdentity({ title: 'My App', icon: '★' });
+ModAPI.registerSettingsSection({ id: 'mine', label: 'Mine', icon: 'tune', render(container) {} });
+ModAPI.setMarkdown(element, markdownText);   // safe markdown into an element</code></pre>
+<ul>
+<li><code>render</code> runs once, the first time a tab opens. After that the view is shown and hidden.</li>
+<li><code>overlay: true</code> dims the page and closes on click-outside or Esc. <code>center</code> plus <code>overlay</code> gives a settings-dialog look.</li>
+<li>The last mod to call <code>setIdentity</code> wins. <code>icon</code> may be text, an http or file URL, or a data image URL.</li>
+<li><code>ModAPI.renderMarkdown(text)</code> returns escaped HTML. Links are limited to http, https and mailto and open in the system browser.</li>
+<li><code>window.Icon(name, { size, color, title })</code> builds a Material Symbols icon element.</li>
+</ul>
+
+<h2 id="native">Native APIs and permissions</h2>
+<p>Desktop mods reach the operating system through <code>ModAPI.native</code>. Each call runs as the mod that made it, and the main process checks that mod's manifest before doing anything.</p>
+<table>
+<tr><th>API</th><th>Permission</th><th>Notes</th></tr>
+<tr><td><code>fs</code>: <code>ensureDir</code>, <code>readFile</code>, <code>readBytes</code>, <code>writeFile</code>, <code>writeBytes</code>, <code>readDir</code>, <code>exists</code>, <code>resolvePath</code>, <code>toFileUrl</code>, <code>removeFile</code>, <code>removeDir</code>, <code>move</code></td><td><code>fs.ensure_dir</code>, <code>fs.read</code>, <code>fs.write</code>, <code>fs.read_dir</code>, <code>fs.remove</code>, <code>fs.move</code></td><td>Relative paths inside the mod's own data folder only. Absolute paths and <code>..</code> are rejected, symlinks are resolved, 4 GiB quota per mod, reads capped at 256 MiB.</td></tr>
+<tr><td><code>shell.run(command, cwd)</code></td><td><code>shell.run</code></td><td>Runs through the system shell. 30 second timeout, 1 MiB of output.</td></tr>
+<tr><td><code>net.fetch(url)</code></td><td><code>net.fetch</code></td><td>Fetches from the main process. Used by the Calendar for ICS feeds.</td></tr>
+<tr><td><code>notifications.send(title, body)</code></td><td><code>notifications.send</code></td><td>Native desktop notification.</td></tr>
+<tr><td><code>dialog</code>: <code>pickFolder</code>, <code>pickFiles</code>, <code>pickSaveFile</code></td><td><code>dialog.pick</code></td><td>Cancelling resolves to null or an empty list.</td></tr>
+<tr><td><code>pty</code>: <code>shells</code>, <code>open</code>, <code>write</code>, <code>resize</code></td><td><code>pty.access</code></td><td>Real pseudo-terminals through node-pty. <code>open</code> returns <code>{ session, label, close }</code>.</td></tr>
+<tr><td><code>webview</code></td><td><code>webview.access</code></td><td>Embedded pages, http and https only. Each mod gets its own cookie partition.</td></tr>
+<tr><td><code>settings</code>: <code>read</code>, <code>write</code></td><td><code>settings.read</code>, <code>settings.write</code></td><td>App settings, used by Core.</td></tr>
+<tr><td><code>mods</code>: <code>list</code>, <code>toggle</code></td><td><code>mods.toggle</code> to toggle</td><td>Enable or disable a mod.</td></tr>
+</table>
+<pre><code>const fs = ModAPI.native.fs;
+await fs.writeFile('notes/today.txt', 'hello');
+const text = await fs.readFile('notes/today.txt');
+
+const term = await ModAPI.native.pty.open({ cols: 80, rows: 24,
+  onData: (chunk) =&gt; console.log(chunk), onExit: (code) =&gt; console.log(code) });
+await term.close();</code></pre>
+<p>The preload bridge also exposes <code>electronAPI.openExternal(url)</code> (http, https, mailto) and <code>electronAPI.onUpdateProgress(callback)</code>, which returns an unsubscribe function.</p>
+
+<h2 id="bundled">Bundled mods</h2>
+<table>
+<tr><th>Mod</th><th>What it does</th><th>Permissions</th></tr>
+<tr><td>Core</td><td>Settings (theme presets, per-variable colors, mod toggles, updates), markdown renderer, settings sections for other mods. Always on.</td><td>settings.read, settings.write, fs.ensure_dir, mods.toggle</td></tr>
+<tr><td>Browser</td><td>Tabbed browser. At most 5 live pages, restored tabs start asleep, background tabs sleep after 10 idle minutes (not while playing audio).</td><td>webview.access, fs.*</td></tr>
+<tr><td>Music Player</td><td>Local library (MP3, WAV, OGG, AAC, FLAC, M4A, MP4, WEBM, MOV, AVI, MKV, FLV) plus a Streaming tab for Spotify, Apple Music, YouTube Music and Amazon Music.</td><td>fs.*, webview.access</td></tr>
+<tr><td>IDE</td><td>Code workspace with a Monaco editor, file tree, command palette and a native terminal. Files with an unknown extension open as plain text.</td><td>shell.run, pty.access, dialog.pick</td></tr>
+<tr><td>Calendar</td><td>Month, week, day and agenda views, ICS subscriptions with offline cache, manual and recurring events, notifications.</td><td>net.fetch, notifications.send</td></tr>
+<tr><td>Notes</td><td>Floating tabbed notepad. Notes autosave and return next launch.</td><td>none</td></tr>
+</table>
+
+<h2 id="updates">Updates</h2>
+<p>modapp updates itself with <code>electron-updater</code> from published GitHub releases (drafts are never offered).</p>
+<ul>
+<li>On startup, and from <strong>Settings, Updates</strong>, an in-app dialog shows the version change, date and the release notes rendered as markdown.</li>
+<li><strong>Install and restart</strong> downloads with a progress bar, then restarts. <strong>Later</strong> closes the dialog; <strong>View on GitHub</strong> opens the release page.</li>
+<li>The startup pop-up can be switched off (<strong>Show update pop-up</strong>). A small notice then appears in the bottom-right corner.</li>
+<li>Release notes come from the GitHub release body. If GitHub is unreachable, the updater's own text is used.</li>
+</ul>
+
+<h2 id="releases">Releases and CI</h2>
+<ol>
+<li>Set the same version in <code>package.json</code> and the tag. The workflow refuses a tag that does not match.</li>
+<li>Push a <code>v*</code> tag. GitHub Actions runs the tests, then builds Windows (NSIS) and Linux (AppImage, deb, rpm).</li>
+<li>Packages are attached to a draft release. Write the notes in markdown, then publish it. Users are offered the update only after that.</li>
+</ol>
+<p>Windows builds are VMP-signed through castLabs EVS in the <code>afterSign</code> hook, which needs the <code>EVS_ACCOUNT_NAME</code> and <code>EVS_PASSWD</code> repository secrets. Builds are not Authenticode-signed yet, so Windows SmartScreen may warn on first run. On Linux, a newly installed Widevine component needs a restart, so the app restarts itself once after installing it.</p>
+
+<h2 id="security">Security and trust</h2>
+<p class="note">Mods are fully trusted code. Permissions limit what an honest mod can reach and make mistakes visible. They are not a sandbox against a hostile mod, so install only mods you trust.</p>
+<ul>
+<li>Mod ids and asset paths are validated, and each mod's files and data live in separate folders.</li>
+<li>Webviews load only http and https pages, with separate storage per mod.</li>
+<li>Rendered markdown escapes all text first, so release notes cannot run script.</li>
+<li>Installing an update no longer needs a native confirmation, so any installed mod can start one.</li>
+</ul>
+
+<h2 id="changelog">Changelog</h2>
+<table>
+<tr><th>Version</th><th>Date</th><th>Highlights</th></tr>
+<tr><td>3.1.1</td><td>Oct 6</td><td>Opening Settings no longer hides the browser webview; audio and video keep playing.</td></tr>
+<tr><td>3.1.0</td><td>Oct 6</td><td>Menu bar replaced by a right-click menu. One PNG icon for all platforms. Linux restarts once after installing Widevine.</td></tr>
+<tr><td>3.0.1</td><td>Oct 6</td><td>Update pop-up can be turned off. Bundled mods live in the writable data folder.</td></tr>
+<tr><td>3.0.0</td><td>Oct 5</td><td>Security fixes V1 to V9. Login removed. Mods must use their assigned ids for permission calls. Electron 44.5.1.</td></tr>
+<tr><td>2.2.0</td><td>Oct 4</td><td>In-app update dialog with markdown release notes.</td></tr>
+<tr><td>2.1.0</td><td>Oct 4</td><td>Browser tabs with sleeping tabs. New Notes mod. New Browser and Music layouts.</td></tr>
+<tr><td>2.0.0</td><td>Oct 3</td><td>Moved from Tauri to Electron. Widevine DRM, electron-updater, automated releases.</td></tr>
+<tr><td>1.2.1</td><td>Sep 25</td><td>Updater wired into the UI. Packages no longer ship an empty mods folder.</td></tr>
+<tr><td>1.2.0</td><td>Sep 25</td><td>Theme presets and per-variable colors. Login leftovers removed.</td></tr>
+<tr><td>1.1.0</td><td>Sep 24</td><td>Calendar mod.</td></tr>
+<tr><td>1.0.0</td><td>Sep 18</td><td>First release, built on Tauri.</td></tr>
+</table>
+
+<h2 id="status">About these docs</h2>
+<p>Written on Oct 6, 2026 from the public repository, its releases and the mod sources. The latest release is v3.1.1 (commit <code>9a44ba4</code>), but <code>package.json</code> on <code>main</code> already says 3.2.0, so newer work exists that these docs do not cover. The repository README still describes the older Login and Tauri setup; this page replaces it as the reference.</p>
+<footer>Source: <a href="https://github.com/coolprojects123/modapp">github.com/coolprojects123/modapp</a>. Releases: <a href="https://github.com/coolprojects123/modapp/releases">github.com/coolprojects123/modapp/releases</a>.</footer>
+</main>
+</body>
+</html>
