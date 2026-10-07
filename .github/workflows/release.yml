@@ -16,7 +16,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             build-script: build:linux
-          - os: windows-latest
+          - os: windows-2022
             build-script: build:windows
     runs-on: ${{ matrix.os }}
     steps:
