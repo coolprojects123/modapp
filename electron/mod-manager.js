@@ -5,6 +5,7 @@
 //   .config.json    { [id]: enabled }
 //   .order.json     [id, ...]  load order (core is always first and is never stored)
 //   .removed.json   [id, ...]  bundled mods the user deleted, so the launch-time sync doesn't bring them back
+//   .hidden.json    [id, ...]  mods the user "deleted" from the app: kept on disk, but not listed, loaded or allowed to run
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -185,6 +186,7 @@ function downloadGithubZip(parsed, options = {}) {
 function createModManager({ modsDir, configPath = path.join(modsDir, '.config.json') }) {
   const orderPath = path.join(modsDir, '.order.json');
   const removedPath = path.join(modsDir, '.removed.json');
+  const hiddenPath = path.join(modsDir, '.hidden.json');
 
   const idList = (filePath) => {
     const value = readJson(filePath, []);
@@ -192,6 +194,14 @@ function createModManager({ modsDir, configPath = path.join(modsDir, '.config.js
   };
 
   const removedIds = () => idList(removedPath);
+  const hiddenIds = () => idList(hiddenPath);
+
+  // Hidden mods are left out of every listing, so they are not loaded and (because the permission checks
+  // only know listed mods) cannot call anything native either.
+  const visible = (mods) => {
+    const hidden = new Set(hiddenIds());
+    return mods.filter((mod) => !hidden.has(mod.id));
+  };
 
   // Core first, then the saved order; mods with no saved position go last (alphabetically).
   function sortMods(mods) {
@@ -266,6 +276,7 @@ function createModManager({ modsDir, configPath = path.join(modsDir, '.config.js
       staged.cleanup();
     }
     writeJson(removedPath, removedIds().filter((id) => id !== staged.id));
+    if (hiddenIds().includes(staged.id)) writeJson(hiddenPath, hiddenIds().filter((id) => id !== staged.id));
     const order = idList(orderPath);
     if (!order.includes(staged.id)) writeJson(orderPath, [...order, staged.id]);
     return staged.id;
@@ -288,7 +299,20 @@ function createModManager({ modsDir, configPath = path.join(modsDir, '.config.js
     if (!removedIds().includes(id)) writeJson(removedPath, [...removedIds(), id]);
   }
 
-  return { sortMods, saveOrder, stage, commit, remove, removedIds };
+  // "Delete" from the user's point of view: nothing is removed from disk. The mod's files, saved data and
+  // enabled setting are kept, so installing it again (or clearing it from .hidden.json) brings it back as it was.
+  function hide(id) {
+    if (typeof id !== 'string' || !MOD_ID_PATTERN.test(id)) throw new Error('invalid mod id');
+    if (id === CORE_ID) throw new Error('the core mod cannot be deleted');
+    if (!fs.existsSync(path.join(modsDir, id, 'mod.json'))) throw new Error(`mod '${id}' is not installed`);
+    if (!hiddenIds().includes(id)) writeJson(hiddenPath, [...hiddenIds(), id]);
+  }
+
+  function unhide(id) {
+    if (hiddenIds().includes(id)) writeJson(hiddenPath, hiddenIds().filter((item) => item !== id));
+  }
+
+  return { sortMods, saveOrder, stage, commit, remove, hide, unhide, hiddenIds, visible, removedIds };
 }
 
 module.exports = { createModManager, parseGithubUrl, githubZipUrl, parseZipUrl, downloadZipFile, downloadGithubZip, MOD_ID_PATTERN, CORE_ID };

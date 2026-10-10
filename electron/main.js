@@ -178,6 +178,13 @@ function writeJson(filePath, value) {
   fs.renameSync(temp, filePath);
 }
 
+// Changes whenever a mod's files are replaced (an install over an existing mod, or an edited mod.json), so the
+// renderer can tell that a running mod is out of date and reload just that mod.
+function modStamp(modDir, manifestPath) {
+  try { return Math.max(fs.statSync(modDir).mtimeMs, fs.statSync(manifestPath).mtimeMs); }
+  catch { return 0; }
+}
+
 function discoverMods() {
   const config = readJson(configPath, {});
   let entries;
@@ -196,12 +203,13 @@ function discoverMods() {
         ...manifest,
         id,
         assetBase: `${pathToFileURL(path.join(modsDir, id)).href}/`,
+        stamp: modStamp(path.join(modsDir, id), manifestPath),
         core,
         enabled: core ? true : (config[id] !== undefined ? config[id] : manifest.enabledByDefault !== false),
       };
     })
     .filter(Boolean);
-  return modManager.sortMods(mods); // load order: core first, then the saved order
+  return modManager.sortMods(modManager.visible(mods)); // load order: core first, then the saved order; hidden mods left out
 }
 
 // ============================================================
@@ -344,15 +352,15 @@ ipcMain.handle('mods:remove', async (event, { modId, id }) => {
     type: 'warning',
     title: 'Delete mod',
     message: `Delete "${shortText(mod.name, id)}"?`,
-    detail: 'The mod\'s files are removed. Data it saved is kept in case you install it again.',
+    detail: 'The mod is hidden and stops running. Its files and saved data are kept, so installing it again brings it back.',
     buttons: ['Delete', 'Cancel'],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
   });
   if (response !== 0) return { removed: false };
-  modManager.remove(id);
-  return { removed: true };
+  modManager.hide(id); // hidden, not erased
+  return { removed: true, hidden: true };
 });
 
 ipcMain.handle('mods:reorder', (event, { modId, order }) => {

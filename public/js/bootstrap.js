@@ -27,10 +27,44 @@ const modAPIImpl = (function () {
   let modAssetBase = null;
   let modId = null;
 
+  // Everything a mod registers is remembered here so it can be taken back out when the mod is unloaded
+  // (disabled, deleted or replaced) without reloading the whole page.
+  const cleanups = new Map(); // mod id -> [fn]
+  const track = (owner, fn) => {
+    if (!owner) return;
+    if (!cleanups.has(owner)) cleanups.set(owner, []);
+    cleanups.get(owner).push(fn);
+  };
+
   return {
     get modId() { return modId; },
     _setModId(id) { modId = id; },
     _setModAssetBase(base) { modAssetBase = base; },
+
+    // Call while your script loads. fn runs when the mod is disabled, deleted or replaced: stop timers,
+    // close terminals and sockets, remove listeners you added to document or window.
+    onUnload(fn) { if (typeof fn === 'function') track(modId, fn); },
+
+    // Runs a mod's cleanups and removes its stylesheets and script tags. Called by refreshMods().
+    _unloadMod(id) {
+      const list = cleanups.get(id) || [];
+      cleanups.delete(id);
+      for (const fn of list.reverse()) {
+        try { fn(); } catch (err) { console.error(`[mods] cleanup for "${id}" failed:`, err); }
+      }
+      document.querySelectorAll(`link[data-mod-id="${CSS.escape(id)}"], script[data-mod-id="${CSS.escape(id)}"]`)
+        .forEach((element) => element.remove());
+    },
+
+    // Puts tabs and widgets back in mod load order (the order saved by the Mods panel).
+    _applyOrder(order) {
+      const rank = (source) => { const index = order.indexOf(source); return index < 0 ? order.length : index; };
+      for (const map of [tabs, widgets]) {
+        const sorted = [...map.entries()].sort((a, b) => rank(a[1].source) - rank(b[1].source));
+        map.clear();
+        for (const [key, value] of sorted) map.set(key, value);
+      }
+    },
 
     setIdentity({ title, icon } = {}) {
       if (typeof title === 'string' && title.trim()) identity.title = title.trim();
@@ -93,6 +127,12 @@ const modAPIImpl = (function () {
       if (tabs.has(id) && tabs.get(id).source !== modId) {
         console.warn(`[ModAPI] tab "${id}" from "${modId}" replaces the tab registered by "${tabs.get(id).source}"`);
       }
+      const owner = modId;
+      track(owner, () => {
+        if (tabs.get(id)?.source !== owner) return;
+        tabs.delete(id);
+        document.dispatchEvent(new CustomEvent('mods:tab-removed', { detail: { id } }));
+      });
       tabs.set(id, { id, label: label || id, icon: icon || '\u{1F9E9}', render, fullBleed: !!fullBleed, source: modId });
       document.dispatchEvent(new CustomEvent('mods:tabs-changed'));
     },
@@ -111,6 +151,12 @@ const modAPIImpl = (function () {
         console.warn('[ModAPI] registerWidget requires an id and a mount(container) function');
         return;
       }
+      const owner = modId;
+      track(owner, () => {
+        if (widgets.get(id)?.source !== owner) return;
+        widgets.delete(id);
+        document.dispatchEvent(new CustomEvent('mods:widget-removed', { detail: { id } }));
+      });
       widgets.set(id, {
         id,
         label: label || id,
@@ -136,6 +182,12 @@ const modAPIImpl = (function () {
         console.warn('[ModAPI] overrideTab requires a render(container) function');
         return;
       }
+      const owner = modId;
+      track(owner, () => {
+        if (overrides.get(id) !== render) return;
+        overrides.delete(id);
+        overrideOptions.delete(id);
+      });
       overrides.set(id, render);
       if (options && typeof options.fullBleed === 'boolean') overrideOptions.set(id, { fullBleed: options.fullBleed });
       else overrideOptions.delete(id);
@@ -146,6 +198,11 @@ const modAPIImpl = (function () {
     onTabActivate(id, fn) {
       if (!activateHooks.has(id)) activateHooks.set(id, []);
       activateHooks.get(id).push(fn);
+      track(modId, () => {
+        const list = activateHooks.get(id);
+        const index = list ? list.indexOf(fn) : -1;
+        if (index >= 0) list.splice(index, 1);
+      });
     },
 
     // -- internal, read by whichever mod is building the shell --
@@ -181,6 +238,39 @@ function safeModPath(modId, src) {
   return ok;
 }
 
+const loadedMods = new Map(); // id -> manifest, for every mod that is currently running
+
+function assetUrl(mod, file, bust) {
+  const url = mod.assetBase ? `${mod.assetBase}${file}` : `../mods/${mod.id}/${file}`;
+  return bust ? `${url}?v=${bust}` : url; // a changed version of a mod must not come from the cache
+}
+
+async function runModScripts(mod, files, kind, bust) {
+  for (const src of files || []) {
+    if (!safeModPath(mod.id, src)) continue;
+    window.ModAPI._setModId(mod.id);
+    window.ModAPI._setModAssetBase(mod.assetBase || null);
+    try {
+      await loadScript(assetUrl(mod, src, bust), mod.id);
+    } catch (err) {
+      console.error(`[mods] failed to load ${kind} for "${mod.id}":`, err);
+    }
+  }
+}
+
+function addModStyles(mod, bust) {
+  for (const href of mod.styles || []) {
+    if (!safeModPath(mod.id, href)) continue;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = assetUrl(mod, href, bust);
+    link.dataset.modId = mod.id;
+    document.head.appendChild(link);
+  }
+}
+
+const modBases = (mods) => mods.filter((mod) => mod.assetBase).map((mod) => [mod.assetBase, mod.id]);
+
 async function loadMods() {
   if (window.nativeAPIReady) await window.nativeAPIReady;
 
@@ -200,57 +290,75 @@ async function loadMods() {
 
   // [assetBase, modId] pairs. native-api.js uses these to work out which mod a native call came from
   // (by finding the mod's own script URL in the call stack) and sends that id to the backend explicitly.
-  window.ModAPI._modBases = mods.filter((mod) => mod.assetBase).map((mod) => [mod.assetBase, mod.id]);
+  window.ModAPI._modBases = modBases(mods);
 
-  for (const mod of mods) {
-    for (const src of mod.apis || []) {
-      if (!safeModPath(mod.id, src)) continue;
-      window.ModAPI._setModId(mod.id);
-      window.ModAPI._setModAssetBase(mod.assetBase || null);
-      try {
-        await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
-      } catch (err) {
-        console.error(`[mods] failed to load API for "${mod.id}":`, err);
-      }
-    }
-  }
-
-  for (const mod of mods) {
-    for (const href of mod.styles || []) {
-      if (!safeModPath(mod.id, href)) continue;
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = mod.assetBase ? `${mod.assetBase}${href}` : `../mods/${mod.id}/${href}`;
-      link.dataset.modId = mod.id;
-      document.head.appendChild(link);
-    }
-  }
-
+  for (const mod of mods) await runModScripts(mod, mod.apis, 'API');
+  for (const mod of mods) addModStyles(mod);
   // Scripts load sequentially so each mod can rely on earlier mods having run.
-  for (const mod of mods) {
-    for (const src of mod.scripts || []) {
-      if (!safeModPath(mod.id, src)) continue;
-      window.ModAPI._setModId(mod.id);
-      window.ModAPI._setModAssetBase(mod.assetBase || null);
-      try {
-        await loadScript(mod.assetBase ? `${mod.assetBase}${src}` : `../mods/${mod.id}/${src}`);
-      } catch (err) {
-        console.error(`[mods] failed to load script for "${mod.id}":`, err);
-      }
-    }
-  }
-  
+  for (const mod of mods) await runModScripts(mod, mod.scripts, 'script');
+
   window.ModAPI._setModId(null);
   window.ModAPI._setModAssetBase(null);
+  for (const mod of mods) loadedMods.set(mod.id, mod);
 
   return mods;
 }
 
-function loadScript(src) {
+// Applies mod changes (enable, disable, install, delete, replace, reorder) to the running app instead of
+// reloading the page, so open tabs, playing music, terminals and webviews in the other mods keep going.
+//   reload: ids of mods whose files were replaced; they are unloaded and loaded again.
+let refreshQueue = Promise.resolve();
+function refreshMods(options) {
+  const run = refreshQueue.then(() => applyModChanges(options));
+  refreshQueue = run.catch(() => {});
+  return run;
+}
+
+async function applyModChanges({ reload = [] } = {}) {
+  if (!window.appAPI?.listMods) return { loaded: [], unloaded: [] };
+  const all = await window.appAPI.listMods();
+  const desired = all.filter((mod) => mod.enabled);
+  const wanted = new Set(desired.map((mod) => mod.id));
+  // A mod whose files were replaced on disk (same id, new stamp) is reloaded without being told to.
+  const reloading = new Set([
+    ...reload,
+    ...desired
+      .filter((mod) => loadedMods.has(mod.id) && mod.stamp !== undefined && loadedMods.get(mod.id).stamp !== mod.stamp)
+      .map((mod) => mod.id),
+  ]);
+
+  const drop = [...loadedMods.keys()].filter((id) => id !== 'core' && (!wanted.has(id) || reloading.has(id)));
+  for (const id of drop) {
+    window.ModAPI._unloadMod(id);
+    loadedMods.delete(id);
+  }
+
+  window.ModAPI._modBases = modBases(desired); // new mods need to be recognised before their code runs
+  const fresh = desired.filter((mod) => !loadedMods.has(mod.id));
+  const bust = Date.now();
+  for (const mod of fresh) await runModScripts(mod, mod.apis, 'API', bust);
+  for (const mod of fresh) addModStyles(mod, bust);
+  for (const mod of fresh) await runModScripts(mod, mod.scripts, 'script', bust);
+  window.ModAPI._setModId(null);
+  window.ModAPI._setModAssetBase(null);
+  for (const mod of fresh) loadedMods.set(mod.id, mod);
+
+  window.ModAPI._applyOrder(desired.map((mod) => mod.id));
+  document.dispatchEvent(new CustomEvent('mods:tabs-changed'));
+  document.dispatchEvent(new CustomEvent('mods:widgets-changed'));
+  document.dispatchEvent(new CustomEvent('mods:refreshed', {
+    detail: { loaded: fresh.map((mod) => mod.id), unloaded: drop },
+  }));
+  return { loaded: fresh.map((mod) => mod.id), unloaded: drop };
+}
+window.ModAPI.refreshMods = refreshMods;
+
+function loadScript(src, modId) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = src;
     script.dataset.dynamic = 'true';
+    if (modId) script.dataset.modId = modId;
     script.onload = resolve;
     script.onerror = reject;
     document.head.appendChild(script);

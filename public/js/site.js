@@ -330,12 +330,33 @@
   }
 
   // ---------------- wiring ----------------
+  // A mod was unloaded (disabled, deleted or replaced): drop its tab's view. If it was the open tab, remember
+  // it so that a replaced mod comes back on the same tab instead of jumping to the first one.
+  let reopenTabId = null;
+  document.addEventListener('mods:tab-removed', (event) => {
+    const id = event.detail.id;
+    tabViews.get(id)?.remove();
+    tabViews.delete(id);
+    viewReady.delete(id);
+    if (activeTabId === id) {
+      reopenTabId = id;
+      activeTabId = null;
+      activationToken++; // cancel an activation that is still waiting on this tab
+      main.classList.remove('full-bleed');
+      content.classList.remove('fading');
+    }
+  });
+
+  document.addEventListener('mods:widget-removed', (event) => closeWidget(event.detail.id));
+
   document.addEventListener('mods:tabs-changed', () => {
     const shouldAutoActivate = activeTabId === null;
     buildNav();
     if (shouldAutoActivate) {
-      const first = [...window.ModAPI._tabs.values()][0];
-      if (first) activateTab(first.id);
+      const tabs = window.ModAPI._tabs;
+      const target = (reopenTabId && tabs.get(reopenTabId)) || [...tabs.values()][0];
+      reopenTabId = null;
+      if (target) activateTab(target.id);
     }
   });
 

@@ -32,6 +32,13 @@
     // resizes to them while this section is open, and back to the default
     // Settings size for any section that doesn't set one.
     const section = { id, label: label || id, icon: icon || 'tune', width: width || null, height: height || null, render };
+    // Take the section back out if the mod that registered it is unloaded.
+    window.ModAPI.onUnload?.(() => {
+      const index = sections.indexOf(section);
+      if (index < 0) return;
+      sections.splice(index, 1);
+      document.dispatchEvent(new CustomEvent('mods:settings-sections-changed'));
+    });
     const existing = sections.findIndex((item) => item.id === id);
     if (existing >= 0) sections[existing] = section; // registering the same id again replaces it
     else sections.push(section);
